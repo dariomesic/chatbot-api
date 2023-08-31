@@ -14,24 +14,24 @@ db_connection = psycopg2.connect(
 def hello():
     return 'Hello, Flask!'
 
-@app.route('/getQuestions', methods=['GET'])#, 'POST'])
-def getQuestions():
+@app.route('/getIntents', methods=['GET'])#, 'POST'])
+def getIntents():
     if request.method == 'GET':
         try:
             cursor = db_connection.cursor()
-            query = "SELECT * FROM questions"
+            query = "SELECT * FROM intents"
             cursor.execute(query)
             items = cursor.fetchall()
-            json_array = [{'id': item[0], 'name': item[1], 'intent_id': item[2]} for item in items]
+            json_array = [{'id': item[0], 'name': item[1]} for item in items]   #for now this is okay however in future this should have another get for each intent too see how many steps and questions and edit time are there
 
             # Convert the list of dictionaries to a JSON string
-            questions = json.dumps(json_array, ensure_ascii=False)
+            intents = json.dumps(json_array, ensure_ascii=False)
 
-            print(questions)
+            print(intents)
 
             cursor.close()
 
-            return jsonify({"questions": questions})
+            return jsonify({"intents": intents})
 
         except Exception as e:
             return jsonify({"error": str(e)})
@@ -83,7 +83,7 @@ def postQuestion():
 if __name__ == '__main__':
     app.run(debug=True)
 
-#first api /getAllQuestions
+#first api /getAllIntents
 #second api /getAllQuestion/question and #third api /getRules from intent from second api togehter
 #fourth api /addQuestion with intent
 #fifth api /updateRule 
