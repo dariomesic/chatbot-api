@@ -55,24 +55,24 @@ def getQuestionsForIntent():
         except Exception as e:
             return jsonify(str(e))
         
-@app.route('/getSteps', methods=['GET'])
-def getSteps():
+@app.route('/getRulesForIntent', methods=['GET'])
+def getRulesForIntent():
     if request.method == 'GET':
         try:
             intent_id = request.args.get('intent_id')
             cursor = db_connection.cursor()
-            query = f"SELECT * FROM steps WHERE intent_id = {intent_id}" #or query = "SELECT * FROM steps WHERE intent_id = {}".format(intent_id)
+            query = f"SELECT * FROM steps WHERE intent_id = {intent_id}"
             cursor.execute(query)
 
             items = cursor.fetchall()
-            json_array = [{'step_id': item[0], 'name_step': item[1], 'intent_id': item[2], 'step_dict': item[3]} for item in items]
 
-            # Convert the list of dictionaries to a JSON string
-            steps = json.dumps(json_array, ensure_ascii=False)
+            # Extract the JSON string from the database result
+            json_array = items[0][3]
 
             cursor.close()
 
-            return jsonify(steps)
+            # Return the JSON string as a JSON response
+            return jsonify(json_array)
 
         except Exception as e:
             return jsonify(str(e))
