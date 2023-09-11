@@ -1,5 +1,5 @@
 from flask import Flask, request, jsonify
-import psycopg2, json
+import psycopg2, json, requests
 app = Flask(__name__)
 
 # Database configuration
@@ -141,6 +141,63 @@ def updateQuestion():
 
         except Exception as e:
             return jsonify(str(e))
+
+
+#sending questions do machine learning   
+@app.route('/sendQuestions', methods=['GET'])
+def sendQuestions():
+    if request.method == 'GET':
+        try:
+
+            cursor = db_connection.cursor()
+            query = "SELECT * FROM questions"
+            cursor.execute(query)
+            items = cursor.fetchall()
+            json_array = [{'question': item[1], 'intent_id': item[2]} for item in items]
+
+            # Initialize an empty list to store the transformed data
+            transformed_data = []
+
+            # Iterate over each item in the database data
+            for item in json_array:
+                # Create a new dictionary in the desired format
+                transformed_item = {
+                    "IntentID": str(item["intent_id"]),  # Convert to string if needed
+                    "Questions": [
+                        {
+                            "QuestionText": item["question"]
+                        }
+                    ]
+                }
+                # Append the transformed item to the result list
+                transformed_data.append(transformed_item)
+
+            db_connection.commit()
+            cursor.close()
+
+            json_data = json.dumps(transformed_data)
+
+            response_from_other_backend = send_data_to_machine_learning(json_data)
+
+            return jsonify(response_from_other_backend)
+
+        except Exception as e:
+            return jsonify(str(e))
+        
+def send_data_to_machine_learning(data):
+    # Define the URL of the other backend API
+    other_backend_url = 'http://18.158.244.150:7000/chatbot/train'
+
+     # Make a POST request with JSON data
+    headers = {'Content-Type': 'application/json'}  # Set the content type to JSON
+    response = requests.post(other_backend_url, data=data, headers=headers)
+
+    # Check the response status code and handle accordingly
+    if response.status_code == 200:
+        return response.json()  # Assuming the response is JSON
+    else:
+        # Handle error cases
+        return {'error': 'Failed to retrieve data from the other backend'}
 
 
 if __name__ == '__main__':
