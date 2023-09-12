@@ -7,7 +7,7 @@ db_connection = psycopg2.connect(
     dbname="postgres",
     user="postgres",
     password="postgres",
-    host="3.75.190.103"
+    host="3.75.212.152"
 )
 
 @app.route('/')
@@ -198,6 +198,9 @@ def send_data_to_machine_learning(data):
     else:
         # Handle error cases
         return {'error': 'Failed to retrieve data from the other backend'}
+    
+#parse user question api
+#parse user answer api
 
 
 if __name__ == '__main__':
