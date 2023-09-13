@@ -177,16 +177,16 @@ def sendQuestions():
 
             json_data = json.dumps(transformed_data)
 
-            response_from_other_backend = send_data_to_machine_learning(json_data)
+            response_from_other_backend = send_data_to_machine_learning(json_data, 'train')
 
             return jsonify(response_from_other_backend)
 
         except Exception as e:
             return jsonify(str(e))
         
-def send_data_to_machine_learning(data):
+def send_data_to_machine_learning(data, type):
     # Define the URL of the other backend API
-    other_backend_url = 'http://18.158.244.150:7000/chatbot/train'
+    other_backend_url = 'http://18.158.244.150:7000/chatbot/' + type
 
      # Make a POST request with JSON data
     headers = {'Content-Type': 'application/json'}  # Set the content type to JSON
@@ -199,18 +199,106 @@ def send_data_to_machine_learning(data):
         # Handle error cases
         return {'error': 'Failed to retrieve data from the other backend'}
     
-#parse user question api
-#parse user answer api
+
+
+
+@app.route('/chatbotSentMessage', methods=['POST'])
+def chatbotSentMessage():
+    if request.method == 'POST':
+        try:
+            data = request.json
+            question = data.get("question")
+
+            transformed_question = {
+                "QuestionText": question
+            }
+
+            json_question = json.dumps(transformed_question)
+            
+            response_from_other_backend = send_data_to_machine_learning(json_question, 'query')
+            intent_id = response_from_other_backend['PredictedIntent']['IntentID']
+
+            cursor = db_connection.cursor()
+            query = f"SELECT * FROM steps WHERE intent_id = {intent_id}"
+            cursor.execute(query)
+
+            items = cursor.fetchall()
+
+            # Extract the JSON string from the database result
+            json_array = items[0][3]
+            cursor.close()
+
+            result = json.loads(json_array)[0]
+
+            result['intent_id'] = intent_id
+
+            # Return the JSON string as a JSON response
+            return jsonify(result)
+
+        except Exception as e:
+            return jsonify(str(e))
+
+
+@app.route('/chatbotUserResponse', methods=['POST'])
+def chatbotUserResponse():
+    if request.method == 'POST':
+        try:
+            data = request.json
+            conditions = data.get("conditions")
+            intent_id = data.get("intent_id")
+
+            cursor = db_connection.cursor()
+            query = f"SELECT * FROM steps WHERE intent_id = {intent_id}"
+            cursor.execute(query)
+            items = cursor.fetchall()
+            cursor.close()
+
+            json_array = items[0][3]
+
+            rule = find_matching_rule(json.loads(json_array), conditions)
+
+            return jsonify(rule)
+
+        except Exception as e:
+            return jsonify(str(e))
+        
+
+def find_matching_rule(rules, conditions):
+    for rule in rules:
+        print(rule)
+        # Check if all conditions must be true or only one condition must be true
+        if rule.get("conditions", {}).get("allConditionsMustBeTrue", False):
+            # Check if all conditions in conditionsList match any condition in the list
+            conditions_list = rule.get("conditions", {}).get("conditionsList", [])
+            if all(
+                any(
+                    (
+                        c.get("subject") == condition.get("subject")
+                        and c.get("predicate") == condition.get("predicate")
+                        and c.get("object") == condition.get("object")
+                    )
+                    for condition in conditions
+                )
+                for c in conditions_list
+            ):
+                return rule
+        else:
+            # Check if at least one condition in conditionsList matches any condition in the list
+            conditions_list = rule.get("conditions", {}).get("conditionsList", [])
+            if any(
+                any(
+                    (
+                        c.get("subject") == condition.get("subject")
+                        and c.get("predicate") == condition.get("predicate")
+                        and c.get("object") == condition.get("object")
+                    )
+                    for condition in conditions
+                )
+                for c in conditions_list
+            ):
+                return rule
+    return None  # No matching rule found
 
 
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=8080)
-
-#first api /getAllIntents
-#second api /getAllQuestion/question and #third api /getRules from intent from second api togehter
-#fourth api /addQuestion with intent
-            #/updateQuestion with intent
-            #/deleteQuestion with intent
-#fifth api /updateRule
-#sixth api /sendQuestion from chatbot for intent
-#seventh api /getResponse when user selects bots answer(this can be done with frontend)
