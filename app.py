@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify
-import psycopg2, json, requests
+from datetime import datetime
+import psycopg2, json, requests, time
 app = Flask(__name__)
 
 # Database configuration
@@ -104,7 +105,7 @@ def postQuestion():
             intent_id = data.get("intent_id")
 
             cursor = db_connection.cursor()
-            query = f"INSERT INTO questions (question_id, question, intent_id) VALUES (DEFAULT, '{question}', {intent_id}) RETURNING question_id;;"
+            query = f"INSERT INTO questions (question_id, question, intent_id) VALUES (DEFAULT, '{question}', {intent_id}) RETURNING question_id;"
             cursor.execute(query)
             db_connection.commit()
 
@@ -136,6 +137,32 @@ def deleteQuestion():
             cursor.close()
 
             return jsonify("Question deleted successfully!")
+
+        except Exception as e:
+            return jsonify(str(e))
+        
+@app.route('/addIntent', methods=['GET'])
+def addIntent():
+    if request.method == 'GET':
+        try:
+            cursor = db_connection.cursor()
+            current_datetime = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+            query = f"INSERT INTO intents (intent_id, intent_name, last_edited, examples_count, steps_count) VALUES (DEFAULT, '', '{current_datetime}', 1, 0) RETURNING intent_id;"
+            print(query)
+            cursor.execute(query)
+            db_connection.commit()
+
+            # Fetch the inserted question_id
+            intent_id = cursor.fetchone()[0]
+        
+            cursor.close()
+
+            response = {
+                "message": "Intent added successfully!",
+                "intent_id": intent_id
+            }
+
+            return jsonify(response)
 
         except Exception as e:
             return jsonify(str(e))
@@ -195,6 +222,25 @@ def updateQuestion():
         except Exception as e:
             return jsonify(str(e))
         
+@app.route('/addRuleForIntent', methods=['GET'])
+def addRuleForIntent():
+    if request.method == 'GET':
+        try:
+            data = request.json
+            intent_id = data.get("intent_id")
+            step_dict = '[{"name":"Step 1","conditions":{},"assistant_answer":"","customer_response":"","continuation":"Završetak radnje"}]'
+
+            cursor = db_connection.cursor()
+            query = f"INSERT INTO steps (step_id, name_step, intent_id, step_dict) VALUES (DEFAULT, '1', {intent_id}, {step_dict});"
+            cursor.execute(query)
+            db_connection.commit()
+            cursor.close()
+
+            return jsonify("Step addeed successfully!")
+
+        except Exception as e:
+            return jsonify(str(e))
+        
 @app.route('/updateStep', methods=['PUT'])
 def updatestep():
     if request.method == 'PUT':
@@ -204,7 +250,6 @@ def updatestep():
             new_step = data.get("new_step")
 
             cursor = db_connection.cursor()
-            print(new_step)
             query = f"UPDATE steps SET step_dict = '{json.dumps(new_step)}' WHERE intent_id = {intent_id};"
             cursor.execute(query)
             db_connection.commit()
