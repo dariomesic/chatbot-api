@@ -34,6 +34,23 @@ def getIntents():
         except Exception as e:
             return jsonify(str(e))
         
+@app.route('/getNameForIntent', methods=['GET'])
+def getNameForIntent():
+    if request.method == 'GET':
+        try:
+            intent_id = request.args.get('intent_id')
+            cursor = db_connection.cursor()
+            query = f"SELECT intent_name FROM intents WHERE intent_id = {intent_id}"
+            cursor.execute(query)
+            items = cursor.fetchall()
+
+            cursor.close()
+
+            return jsonify(items[0][0])
+
+        except Exception as e:
+            return jsonify(str(e))
+        
 @app.route('/getQuestionsForIntent', methods=['GET'])
 def getQuestionsForIntent():
     if request.method == 'GET':
@@ -123,6 +140,42 @@ def deleteQuestion():
         except Exception as e:
             return jsonify(str(e))
         
+@app.route('/deleteIntent', methods=['DELETE'])
+def deleteIntent():
+    if request.method == 'DELETE':
+        try:
+
+            intent_id = request.args.get('intent_id')
+            cursor = db_connection.cursor()
+            query = f"DELETE FROM intents WHERE intent_id = '{intent_id}';"
+            cursor.execute(query)
+            db_connection.commit()
+            cursor.close()
+
+            return jsonify("Intent deleted successfully!")
+
+        except Exception as e:
+            return jsonify(str(e))
+        
+@app.route('/updateIntent', methods=['PUT'])
+def updateIntent():
+    if request.method == 'PUT':
+        try:
+            data = request.json
+            intent_id = data.get("intent_id")
+            new_intent = data.get("new_intent")
+
+            cursor = db_connection.cursor()
+            query = f"UPDATE intents SET intent_name = '{new_intent}' WHERE intent_id = {intent_id};"
+            cursor.execute(query)
+            db_connection.commit()
+            cursor.close()
+
+            return jsonify("Intent updated successfully!")
+
+        except Exception as e:
+            return jsonify(str(e))
+        
 @app.route('/updateQuestion', methods=['PUT'])
 def updateQuestion():
     if request.method == 'PUT':
@@ -138,6 +191,26 @@ def updateQuestion():
             cursor.close()
 
             return jsonify("Question updated successfully!")
+
+        except Exception as e:
+            return jsonify(str(e))
+        
+@app.route('/updateStep', methods=['PUT'])
+def updatestep():
+    if request.method == 'PUT':
+        try:
+            data = request.json
+            intent_id = data.get("intent_id")
+            new_step = data.get("new_step")
+
+            cursor = db_connection.cursor()
+            print(new_step)
+            query = f"UPDATE steps SET step_dict = '{json.dumps(new_step)}' WHERE intent_id = {intent_id};"
+            cursor.execute(query)
+            db_connection.commit()
+            cursor.close()
+
+            return jsonify("Step updated successfully!")
 
         except Exception as e:
             return jsonify(str(e))
@@ -265,7 +338,6 @@ def chatbotUserResponse():
 
 def find_matching_rule(rules, conditions):
     for rule in rules:
-        print(rule)
         # Check if all conditions must be true or only one condition must be true
         if rule.get("conditions", {}).get("allConditionsMustBeTrue", False):
             # Check if all conditions in conditionsList match any condition in the list
