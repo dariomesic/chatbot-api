@@ -164,7 +164,7 @@ def addIntent():
         try:
             cursor = db_connection.cursor()
             current_datetime = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
-            query = f"INSERT INTO intents (intent_id, intent_name, last_edited, examples_count, steps_count) VALUES (DEFAULT, '', '{current_datetime}', 1, 0) RETURNING intent_id;"
+            query = f"INSERT INTO intents (intent_id, intent_name, last_edited, examples_count, steps_count, thumbs_up, thumbs_down) VALUES (DEFAULT, '', '{current_datetime}', 1, 0, 0, 0) RETURNING intent_id;"
             print(query)
             cursor.execute(query)
             db_connection.commit()
