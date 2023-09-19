@@ -141,6 +141,23 @@ def deleteQuestion():
         except Exception as e:
             return jsonify(str(e))
         
+@app.route('/deleteQuestionsById', methods=['DELETE'])
+def deleteQuestionsById():
+    if request.method == 'DELETE':
+        try:
+
+            intent_id = request.args.get('intent_id')
+            cursor = db_connection.cursor()
+            query = f"DELETE FROM questions WHERE intent_id = '{intent_id}';"
+            cursor.execute(query)
+            db_connection.commit()
+            cursor.close()
+
+            return jsonify("Questions deleted successfully!")
+
+        except Exception as e:
+            return jsonify(str(e))
+        
 @app.route('/addIntent', methods=['GET'])
 def addIntent():
     if request.method == 'GET':
@@ -226,13 +243,12 @@ def updateQuestion():
 def addRuleForIntent():
     if request.method == 'GET':
         try:
-            data = request.json
-            intent_id = data.get("intent_id")
+            intent_id = request.args.get('intent_id')
             step_dict = '[{"name":"Step 1","conditions":{},"assistant_answer":"","customer_response":"","continuation":"Završetak radnje"}]'
 
             cursor = db_connection.cursor()
-            query = f"INSERT INTO steps (step_id, name_step, intent_id, step_dict) VALUES (DEFAULT, '1', {intent_id}, {step_dict});"
-            cursor.execute(query)
+            query = "INSERT INTO steps (step_id, name_step, intent_id, step_dict) VALUES (DEFAULT, '1', %s, %s);"
+            cursor.execute(query, (intent_id, step_dict))
             db_connection.commit()
             cursor.close()
 
@@ -259,6 +275,26 @@ def updatestep():
 
         except Exception as e:
             return jsonify(str(e))
+
+
+@app.route('/deleteStep', methods=['DELETE'])
+def deleteStep():
+    if request.method == 'DELETE':
+        try:
+
+            intent_id = request.args.get('intent_id')
+            cursor = db_connection.cursor()
+            query = f"DELETE FROM steps WHERE intent_id = '{intent_id}';"
+            cursor.execute(query)
+            db_connection.commit()
+            cursor.close()
+
+            return jsonify("Step deleted successfully!")
+
+        except Exception as e:
+            return jsonify(str(e))
+        
+
 
 
 #sending questions do machine learning   
