@@ -1,13 +1,13 @@
 from flask import Flask, request, jsonify
-from datetime import datetime
-import psycopg2, json, requests, time
+from datetime import datetime, timedelta
+import psycopg2, json, requests, uuid
 app = Flask(__name__)
 
 # Database configuration
 db_connection = psycopg2.connect(
     dbname="postgres",
     user="postgres",
-    password="postgres",
+    password="TWbyVdR1rt%+",
     host="3.75.212.152"
 )
 
@@ -15,12 +15,33 @@ db_connection = psycopg2.connect(
 def hello():
     return 'Hello, Flask!'
 
-@app.route('/getIntents', methods=['GET'])#, 'POST'])
-def getIntents():
+@app.route('/getSystems', methods=['GET'])#, 'POST'])
+def getSystems():
     if request.method == 'GET':
         try:
             cursor = db_connection.cursor()
-            query = "SELECT * FROM intents"
+            query = "SELECT * FROM systems"
+            cursor.execute(query)
+            items = cursor.fetchall()
+            json_array = [{'id': item[0], 'name': item[1], 'intents_count': item[2]} for item in items]
+            
+            # Convert the list of dictionaries to a objects
+            systems = json.dumps(json_array, indent=4, sort_keys=True, default=str) #fixing datetime bug on json parse
+
+            cursor.close()
+
+            return systems
+
+        except Exception as e:
+            return jsonify(str(e))
+
+@app.route('/getIntentsForSystem', methods=['GET'])#, 'POST'])
+def getIntentsForSystem():
+    if request.method == 'GET':
+        try:
+            system_id = request.args.get('system_id')
+            cursor = db_connection.cursor()
+            query = f"SELECT * FROM intents WHERE system_id = {system_id}"
             cursor.execute(query)
             items = cursor.fetchall()
             json_array = [{'id': item[0], 'name': item[1], 'last_edited': item[2], 'examples_count': item[3], 'steps_count': item[4]} for item in items]
@@ -103,9 +124,10 @@ def postQuestion():
             data = request.json
             question = data.get("question")
             intent_id = data.get("intent_id")
+            system_id = data.get("system_id")
 
             cursor = db_connection.cursor()
-            query = f"INSERT INTO questions (question_id, question, intent_id) VALUES (DEFAULT, '{question}', {intent_id}) RETURNING question_id;"
+            query = f"INSERT INTO questions (question_id, question, intent_id, system_id) VALUES (DEFAULT, '{question}', {intent_id}, {system_id}) RETURNING question_id;"
             cursor.execute(query)
             db_connection.commit()
 
@@ -158,20 +180,31 @@ def deleteQuestionsById():
         except Exception as e:
             return jsonify(str(e))
         
-@app.route('/addIntent', methods=['GET'])
-def addIntent():
+@app.route('/addIntentForSystem', methods=['GET'])
+def addIntentForSystem():
     if request.method == 'GET':
         try:
+            system_id = request.args.get("system_id")
             cursor = db_connection.cursor()
-            current_datetime = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
-            query = f"INSERT INTO intents (intent_id, intent_name, last_edited, examples_count, steps_count, thumbs_up, thumbs_down) VALUES (DEFAULT, '', '{current_datetime}', 1, 0, 0, 0) RETURNING intent_id;"
-            print(query)
-            cursor.execute(query)
-            db_connection.commit()
 
-            # Fetch the inserted question_id
+            # Calculate the timestamp with a timezone offset of +2 hours
+            current_datetime = (datetime.utcnow() + timedelta(hours=2)).strftime('%Y-%m-%d %H:%M:%S')
+
+            # Insert a new intent into the database
+            query = f"INSERT INTO intents (intent_id, intent_name, last_edited, examples_count, steps_count, thumbs_up, thumbs_down, system_id) VALUES (DEFAULT, '', '{current_datetime}', 0, 1, 0, 0, {system_id}) RETURNING intent_id;"
+            cursor.execute(query)
             intent_id = cursor.fetchone()[0]
-        
+
+            # Count the number of intents for the given system_id
+            query = f"SELECT COUNT(*) FROM intents WHERE system_id = {system_id};"
+            cursor.execute(query)
+            count = cursor.fetchone()[0]
+
+            # Update the intents_count in the systems table
+            query = f"UPDATE systems SET intents_count = {count} WHERE system_id = {system_id};"
+            cursor.execute(query)
+
+            db_connection.commit()
             cursor.close()
 
             response = {
@@ -188,10 +221,20 @@ def addIntent():
 def deleteIntent():
     if request.method == 'DELETE':
         try:
-
+            system_id = request.args.get("system_id")
             intent_id = request.args.get('intent_id')
             cursor = db_connection.cursor()
+            # Delete intent from the database
             query = f"DELETE FROM intents WHERE intent_id = '{intent_id}';"
+            cursor.execute(query)
+
+            # Count the number of intents for the given system_id
+            query = f"SELECT COUNT(*) FROM intents WHERE system_id = {system_id};"
+            cursor.execute(query)
+            count = cursor.fetchone()[0]
+
+            # Update the intents_count in the systems table
+            query = f"UPDATE systems SET intents_count = {count} WHERE system_id = {system_id};"
             cursor.execute(query)
             db_connection.commit()
             cursor.close()
@@ -220,6 +263,62 @@ def updateIntent():
         except Exception as e:
             return jsonify(str(e))
         
+
+        
+@app.route('/thumbsUp', methods=['GET'])
+def thumbsUp():
+    if request.method == 'GET':
+        try:
+            intent_id = request.args.get('intent_id')
+            cursor = db_connection.cursor()
+            # Retrieve the current value of the counter
+            query = f"SELECT thumbs_up FROM intents WHERE intent_id = {intent_id};"
+            cursor.execute(query)
+            current_value = cursor.fetchone()[0]
+            
+            # Increment the counter
+            new_value = current_value + 1
+            
+            # Update the counter in the database
+            query = f"UPDATE intents SET thumbs_up = {new_value} WHERE intent_id = {intent_id};"
+            cursor.execute(query)
+            db_connection.commit()
+            
+            cursor.close()
+            
+            return jsonify("Thumbs up counter updated successfully")
+
+        except Exception as e:
+            return jsonify({"error": str(e)})
+        
+@app.route('/thumbsDown', methods=['GET'])
+def thumbsDown():
+    if request.method == 'GET':
+        try:
+            intent_id = request.args.get('intent_id')
+            cursor = db_connection.cursor()
+            # Retrieve the current value of the counter
+            query = f"SELECT thumbs_down FROM intents WHERE intent_id = {intent_id};"
+            cursor.execute(query)
+            current_value = cursor.fetchone()[0]
+            
+            # Increment the counter
+            new_value = current_value + 1
+            
+            # Update the counter in the database
+            query = f"UPDATE intents SET thumbs_down = {new_value} WHERE intent_id = {intent_id};"
+            cursor.execute(query)
+            db_connection.commit()
+            
+            cursor.close()
+            
+            return jsonify("Thumbs down counter updated successfully")
+
+        except Exception as e:
+            return jsonify({"error": str(e)})
+    
+
+        
 @app.route('/updateQuestion', methods=['PUT'])
 def updateQuestion():
     if request.method == 'PUT':
@@ -244,7 +343,7 @@ def addRuleForIntent():
     if request.method == 'GET':
         try:
             intent_id = request.args.get('intent_id')
-            step_dict = '[{"name":"Step 1","conditions":{},"assistant_answer":"","customer_response":"","continuation":"Završetak radnje"}]'
+            step_dict = '[{"id":1,"conditions":{},"assistant_answer":"","customer_response":"","continuation":"ZavrÃ…Â¡etak radnje"}]'
 
             cursor = db_connection.cursor()
             query = "INSERT INTO steps (step_id, name_step, intent_id, step_dict) VALUES (DEFAULT, '1', %s, %s);"
@@ -264,10 +363,17 @@ def updatestep():
             data = request.json
             intent_id = data.get("intent_id")
             new_step = data.get("new_step")
+            # Calculate the timestamp with a timezone offset of +2 hours
+            current_datetime = (datetime.utcnow() + timedelta(hours=2)).strftime('%Y-%m-%d %H:%M:%S')
 
             cursor = db_connection.cursor()
-            query = f"UPDATE steps SET step_dict = '{json.dumps(new_step)}' WHERE intent_id = {intent_id};"
-            cursor.execute(query)
+
+            query_steps = f"UPDATE steps SET step_dict = '{json.dumps(new_step)}' WHERE intent_id = {intent_id};"
+            cursor.execute(query_steps)
+
+            query_intents = f"UPDATE intents SET steps_count = '{len(new_step)}', last_edited = '{current_datetime}' WHERE intent_id = {intent_id};"
+            cursor.execute(query_intents)
+
             db_connection.commit()
             cursor.close()
 
@@ -294,6 +400,47 @@ def deleteStep():
         except Exception as e:
             return jsonify(str(e))
         
+@app.route('/nextStep', methods=['POST'])
+def nextStep():
+    if request.method == 'POST':
+        try:
+            data = request.json
+            response = data.get("response")
+            cursor = db_connection.cursor()
+            query = f"SELECT step_dict FROM steps WHERE intent_id = '{response['intent_id']}';"
+            cursor.execute(query)
+            item = cursor.fetchone()  # Use fetchone to get a single row
+            cursor.close()
+
+            if item:
+                response_data = json.loads(item[0])  # Access the first column from the tuple
+                return jsonify(response_data[response['id']])
+            else:
+                return jsonify({"error": "No matching record found"})
+
+        except Exception as e:
+            return jsonify(str(e))
+
+@app.route('/goToStep', methods=['GET'])  
+def goToStep():
+    if request.method == 'GET':
+        try:
+            intent_id = request.args.get('intent_id')
+            id = request.args.get('id')
+            cursor = db_connection.cursor()
+            query = f"SELECT step_dict FROM steps WHERE intent_id = '{intent_id}';"
+            cursor.execute(query)
+            item = cursor.fetchone()  # Use fetchone to get a single row
+            cursor.close()
+            if item:
+                response_data = json.loads(item[0])  # Access the first column from the tuple
+                return jsonify(response_data[int(id) - 1])
+            else:
+                return jsonify({"error": "No matching record found"})
+
+        except Exception as e:
+            return jsonify(str(e))
+        
 
 
 
@@ -302,9 +449,18 @@ def deleteStep():
 def sendQuestions():
     if request.method == 'GET':
         try:
+            intent_id = request.args.get('intent_id')
+            system_id = request.args.get('system_id')
+            questions_len = request.args.get('questions')
+            # Calculate the timestamp with a timezone offset of +2 hours
+            current_datetime = (datetime.utcnow() + timedelta(hours=2)).strftime('%Y-%m-%d %H:%M:%S')
 
             cursor = db_connection.cursor()
-            query = "SELECT * FROM questions"
+
+            query_intents = f"UPDATE intents SET examples_count = '{questions_len}', last_edited = '{current_datetime}' WHERE intent_id = {intent_id};"
+            cursor.execute(query_intents)
+
+            query = f"SELECT * FROM questions WHERE system_id = '{system_id}'"   #promijeniti kasnije
             cursor.execute(query)
             items = cursor.fetchall()
             json_array = [{'question': item[1], 'intent_id': item[2]} for item in items]
@@ -316,7 +472,8 @@ def sendQuestions():
             for item in json_array:
                 # Create a new dictionary in the desired format
                 transformed_item = {
-                    "IntentID": str(item["intent_id"]),  # Convert to string if needed
+                    "IntentID": str(item["intent_id"]),
+                    "SystemID": system_id,
                     "Questions": [
                         {
                             "QuestionText": item["question"]
@@ -361,9 +518,15 @@ def chatbotSentMessage():
     if request.method == 'POST':
         try:
             data = request.json
+            systemID = data.get("systemID")
             question = data.get("question")
+             
+            # Generate a unique UUID
+            sessionID = str(uuid.uuid4())
 
             transformed_question = {
+                "SessionID": sessionID,
+                "SystemID": systemID,
                 "QuestionText": question
             }
 
@@ -418,6 +581,12 @@ def chatbotUserResponse():
         
 
 def find_matching_rule(rules, conditions):
+    # Replace "subject" with the corresponding rule ID
+    for condition in conditions:
+        for rule in rules:
+            if condition["subject"] == rule["assistant_answer"]:
+                condition["subject"] = rule["id"]
+    
     for rule in rules:
         # Check if all conditions must be true or only one condition must be true
         if rule.get("conditions", {}).get("allConditionsMustBeTrue", False):
