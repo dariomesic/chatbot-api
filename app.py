@@ -1,6 +1,6 @@
 from flask import Flask, request, jsonify
 from datetime import datetime, timedelta
-import psycopg2, json, requests, uuid
+import psycopg2, json, requests
 app = Flask(__name__)
 
 # Database configuration
@@ -31,6 +31,23 @@ def getSystems():
             cursor.close()
 
             return systems
+
+        except Exception as e:
+            return jsonify(str(e))
+        
+@app.route('/getNameForSystem', methods=['GET'])
+def getNameForSystem():
+    if request.method == 'GET':
+        try:
+            system_id = request.args.get('system_id')
+            cursor = db_connection.cursor()
+            query = f"SELECT system_name FROM systems WHERE system_id = {system_id}"
+            cursor.execute(query)
+            items = cursor.fetchall()
+
+            cursor.close()
+
+            return jsonify(items[0][0])
 
         except Exception as e:
             return jsonify(str(e))
@@ -191,7 +208,7 @@ def addIntentForSystem():
             current_datetime = (datetime.utcnow() + timedelta(hours=2)).strftime('%Y-%m-%d %H:%M:%S')
 
             # Insert a new intent into the database
-            query = f"INSERT INTO intents (intent_id, intent_name, last_edited, examples_count, steps_count, thumbs_up, thumbs_down, system_id) VALUES (DEFAULT, '', '{current_datetime}', 0, 1, 0, 0, {system_id}) RETURNING intent_id;"
+            query = f"INSERT INTO intents (intent_id, intent_name, last_edited, examples_count, steps_count, system_id) VALUES (DEFAULT, '', '{current_datetime}', 0, 1, {system_id}) RETURNING intent_id;"
             cursor.execute(query)
             intent_id = cursor.fetchone()[0]
 
@@ -269,21 +286,20 @@ def updateIntent():
 def thumbsUp():
     if request.method == 'GET':
         try:
-            intent_id = request.args.get('intent_id')
             cursor = db_connection.cursor()
             # Retrieve the current value of the counter
-            query = f"SELECT thumbs_up FROM intents WHERE intent_id = {intent_id};"
+            query = f"SELECT * FROM conversations ORDER BY conversation_id DESC LIMIT 1"
             cursor.execute(query)
-            current_value = cursor.fetchone()[0]
+            last_item = cursor.fetchone()
             
-            # Increment the counter
-            new_value = current_value + 1
-            
-            # Update the counter in the database
-            query = f"UPDATE intents SET thumbs_up = {new_value} WHERE intent_id = {intent_id};"
-            cursor.execute(query)
+            last_item_id = last_item[0]
+            print(last_item_id, last_item)
+
+
+            # Update the specified column for the last item
+            update_query = f"UPDATE conversations SET thumbs_up = %s WHERE conversation_id = %s"
+            cursor.execute(update_query, (1, last_item_id))
             db_connection.commit()
-            
             cursor.close()
             
             return jsonify("Thumbs up counter updated successfully")
@@ -295,20 +311,18 @@ def thumbsUp():
 def thumbsDown():
     if request.method == 'GET':
         try:
-            intent_id = request.args.get('intent_id')
             cursor = db_connection.cursor()
             # Retrieve the current value of the counter
-            query = f"SELECT thumbs_down FROM intents WHERE intent_id = {intent_id};"
+            query = f"SELECT * FROM conversations ORDER BY conversation_id DESC LIMIT 1"
             cursor.execute(query)
-            current_value = cursor.fetchone()[0]
-            
-            # Increment the counter
-            new_value = current_value + 1
-            
-            # Update the counter in the database
-            query = f"UPDATE intents SET thumbs_down = {new_value} WHERE intent_id = {intent_id};"
-            cursor.execute(query)
+            last_item = cursor.fetchone()
             db_connection.commit()
+            last_item_id = last_item[0]
+
+
+            # Update the specified column for the last item
+            update_query = f"UPDATE conversations SET thumbs_down = %s WHERE conversation_id = %s"
+            cursor.execute(update_query, (1, last_item_id))
             
             cursor.close()
             
@@ -343,7 +357,7 @@ def addRuleForIntent():
     if request.method == 'GET':
         try:
             intent_id = request.args.get('intent_id')
-            step_dict = '[{"id":1,"conditions":{},"assistant_answer":"","customer_response":"","continuation":"ZavrÃ…Â¡etak radnje"}]'
+            step_dict = '[{"id":1,"conditions":{},"assistant_answer":"","customer_response":"","continuation":"Završetak radnje"}]'
 
             cursor = db_connection.cursor()
             query = "INSERT INTO steps (step_id, name_step, intent_id, step_dict) VALUES (DEFAULT, '1', %s, %s);"
@@ -511,7 +525,16 @@ def send_data_to_machine_learning(data, type):
         return {'error': 'Failed to retrieve data from the other backend'}
     
 
+def updateConversation(uuid, systemID, intent_id, text):
+    # Calculate the timestamp with a timezone offset of +2 hours
+    current_datetime = (datetime.utcnow() + timedelta(hours=2)).strftime('%Y-%m-%d %H:%M:%S')
 
+    # Insert a new intent into the database
+    cursor = db_connection.cursor()
+    query = f"INSERT INTO conversations (uuid, time, system_id, intent_id, text, thumbs_up, thumbs_down, conversation_id) VALUES ('{uuid}', '{current_datetime}', {systemID}, {intent_id}, '{text}', 0, 0, DEFAULT);"
+    cursor.execute(query)
+    db_connection.commit()
+    cursor.close()
 
 @app.route('/chatbotSentMessage', methods=['POST'])
 def chatbotSentMessage():
@@ -520,34 +543,51 @@ def chatbotSentMessage():
             data = request.json
             systemID = data.get("systemID")
             question = data.get("question")
-             
-            # Generate a unique UUID
-            sessionID = str(uuid.uuid4())
+            uuid = data.get("uuid")
 
             transformed_question = {
-                "SessionID": sessionID,
+                "SessionID": uuid,
                 "SystemID": systemID,
                 "QuestionText": question
             }
 
             json_question = json.dumps(transformed_question)
-            
             response_from_other_backend = send_data_to_machine_learning(json_question, 'query')
-            intent_id = response_from_other_backend['PredictedIntent']['IntentID']
+            if response_from_other_backend['PredictedIntent']['Confidence'] < 0.9 and  response_from_other_backend['PredictedIntent']['Confidence'] > 0.75:
+                result = []  # Store intent objects with both name and id
+                predicted_intents = send_data_to_machine_learning(json_question, 'query/4')
+                for predicted_intent in predicted_intents:
+                    intent_id = predicted_intent['PredictedIntent']['IntentID']
+                    cursor = db_connection.cursor()
+                    query = f"SELECT intent_name FROM intents WHERE intent_id = {intent_id}"
+                    cursor.execute(query)
+                    intent_name = cursor.fetchall()
+                    cursor.close()
 
-            cursor = db_connection.cursor()
-            query = f"SELECT * FROM steps WHERE intent_id = {intent_id}"
-            cursor.execute(query)
+                    intent_object = {
+                        'intent_name': intent_name[0][0],
+                        'intent_id': intent_id
+                    }
+                    result.append(intent_object)
 
-            items = cursor.fetchall()
+            elif response_from_other_backend['PredictedIntent']['Confidence'] >= 0.9:
+                intent_id = response_from_other_backend['PredictedIntent']['IntentID']
+                cursor = db_connection.cursor()
+                query = f"SELECT * FROM steps WHERE intent_id = {intent_id}"
+                cursor.execute(query)
 
-            # Extract the JSON string from the database result
-            json_array = items[0][3]
-            cursor.close()
+                items = cursor.fetchall()
 
-            result = json.loads(json_array)[0]
-
-            result['intent_id'] = intent_id
+                # Extract the JSON string from the database result
+                json_array = items[0][3]
+                cursor.close()
+                result = json.loads(json_array)[0]
+                result['intent_id'] = intent_id
+                updateConversation(uuid, systemID, intent_id, question)
+                updateConversation(uuid, systemID, intent_id, result['assistant_answer'])
+            
+            else:
+                result = "Možda mogu ponuditi bolji odgovor ako preformulirate Vaše pitanje."
 
             # Return the JSON string as a JSON response
             return jsonify(result)
@@ -556,23 +596,31 @@ def chatbotSentMessage():
             return jsonify(str(e))
 
 
+
 @app.route('/chatbotUserResponse', methods=['POST'])
 def chatbotUserResponse():
     if request.method == 'POST':
         try:
             data = request.json
             conditions = data.get("conditions")
-            intent_id = data.get("intent_id")
+            intentID = data.get("intent_id")
+            id = data.get("id")
+            uuid = data.get("uuid")
+            systemID = data.get("systemID")
+            answer = data.get("answer")
+
+            updateConversation(uuid, systemID, intentID, answer)
 
             cursor = db_connection.cursor()
-            query = f"SELECT * FROM steps WHERE intent_id = {intent_id}"
+            query = f"SELECT * FROM steps WHERE intent_id = {intentID}"
             cursor.execute(query)
             items = cursor.fetchall()
             cursor.close()
 
             json_array = items[0][3]
 
-            rule = find_matching_rule(json.loads(json_array), conditions)
+            rule = find_matching_rule(json.loads(json_array), conditions, id)
+            updateConversation(uuid, systemID, intentID, rule['assistant_answer'])
 
             return jsonify(rule)
 
@@ -580,18 +628,17 @@ def chatbotUserResponse():
             return jsonify(str(e))
         
 
-def find_matching_rule(rules, conditions):
+def find_matching_rule(rules, conditions, id):
     # Replace "subject" with the corresponding rule ID
     for condition in conditions:
         for rule in rules:
             if condition["subject"] == rule["assistant_answer"]:
                 condition["subject"] = rule["id"]
-    
-    for rule in rules:
+    for index in range(id, len(rules)):
         # Check if all conditions must be true or only one condition must be true
-        if rule.get("conditions", {}).get("allConditionsMustBeTrue", False):
+        if rules[index].get("conditions", {}).get("allConditionsMustBeTrue", False):
             # Check if all conditions in conditionsList match any condition in the list
-            conditions_list = rule.get("conditions", {}).get("conditionsList", [])
+            conditions_list = rules[index].get("conditions", {}).get("conditionsList", [])
             if all(
                 any(
                     (
@@ -603,10 +650,10 @@ def find_matching_rule(rules, conditions):
                 )
                 for c in conditions_list
             ):
-                return rule
+                return rules[index]
         else:
             # Check if at least one condition in conditionsList matches any condition in the list
-            conditions_list = rule.get("conditions", {}).get("conditionsList", [])
+            conditions_list = rules[index].get("conditions", {}).get("conditionsList", [])
             if any(
                 any(
                     (
@@ -618,7 +665,7 @@ def find_matching_rule(rules, conditions):
                 )
                 for c in conditions_list
             ):
-                return rule
+                return rules[index]
     return None  # No matching rule found
 
 
