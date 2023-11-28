@@ -1,4 +1,5 @@
 from flask import Flask, request, jsonify
+import re
 from datetime import datetime, timedelta
 import psycopg2, json, requests
 app = Flask(__name__)
@@ -69,6 +70,28 @@ def getIntentsForSystem():
             cursor.close()
 
             return intents
+
+        except Exception as e:
+            return jsonify(str(e))
+        
+@app.route('/getConversationsForSystem', methods=['GET'])
+def getConversationsForSystem():
+    if request.method == 'GET':
+        try:
+            system_id = request.args.get('system_id')
+            cursor = db_connection.cursor()
+            query = f"SELECT * FROM conversations WHERE system_id = {system_id}"
+            cursor.execute(query)
+        
+            items = cursor.fetchall()
+            json_array = [{'conversation_id': item[0], 'session_id': item[1], 'time': item[2], 'system_id': item[3], 'intent_id': item[4], 'text': item[5], 'thumbs_up': item[6], 'thumbs_down': item[7], 'threshold': item[8]} for item in items]
+
+            # Convert the list of dictionaries to a objects
+            conversations = json.dumps(json_array, indent=8, sort_keys=True, default=str) #fixing datetime bug on json parse
+
+            cursor.close()
+
+            return conversations
 
         except Exception as e:
             return jsonify(str(e))
@@ -144,8 +167,11 @@ def postQuestion():
             system_id = data.get("system_id")
 
             cursor = db_connection.cursor()
-            query = f"INSERT INTO questions (question_id, question, intent_id, system_id) VALUES (DEFAULT, '{question}', {intent_id}, {system_id}) RETURNING question_id;"
-            cursor.execute(query)
+            
+            # Use parameterized query to avoid SQL injection
+            query = "INSERT INTO questions (question_id, question, intent_id, system_id) VALUES (DEFAULT, %s, %s, %s) RETURNING question_id;"
+            cursor.execute(query, (question, intent_id, system_id))
+            
             db_connection.commit()
 
             # Fetch the inserted question_id
@@ -278,8 +304,7 @@ def updateIntent():
             return jsonify("Intent updated successfully!")
 
         except Exception as e:
-            return jsonify(str(e))
-        
+            return jsonify(str(e))   
 
         
 @app.route('/thumbsUp', methods=['GET'])
@@ -287,18 +312,14 @@ def thumbsUp():
     if request.method == 'GET':
         try:
             cursor = db_connection.cursor()
-            # Retrieve the current value of the counter
-            query = f"SELECT * FROM conversations ORDER BY conversation_id DESC LIMIT 1"
+            uuid = request.args.get("uuid")
+            intent_id = request.args.get("intent_id")
+            system_id = request.args.get("system_id")
+
+            current_datetime = (datetime.utcnow() + timedelta(hours=2)).strftime('%Y-%m-%d %H:%M:%S')
+
+            query = f"INSERT INTO conversations (uuid, time, system_id, intent_id, text, thumbs_up, thumbs_down, threshold, conversation_id) VALUES ('{uuid}', '{current_datetime}', {system_id}, {intent_id}, '', 1, 0, '', DEFAULT);"
             cursor.execute(query)
-            last_item = cursor.fetchone()
-            
-            last_item_id = last_item[0]
-            print(last_item_id, last_item)
-
-
-            # Update the specified column for the last item
-            update_query = f"UPDATE conversations SET thumbs_up = %s WHERE conversation_id = %s"
-            cursor.execute(update_query, (1, last_item_id))
             db_connection.commit()
             cursor.close()
             
@@ -312,18 +333,15 @@ def thumbsDown():
     if request.method == 'GET':
         try:
             cursor = db_connection.cursor()
-            # Retrieve the current value of the counter
-            query = f"SELECT * FROM conversations ORDER BY conversation_id DESC LIMIT 1"
+            uuid = request.args.get("uuid")
+            intent_id = request.args.get("intent_id")
+            system_id = request.args.get("system_id")
+
+            current_datetime = (datetime.utcnow() + timedelta(hours=2)).strftime('%Y-%m-%d %H:%M:%S')
+
+            query = f"INSERT INTO conversations (uuid, time, system_id, intent_id, text, thumbs_up, thumbs_down, threshold, conversation_id) VALUES ('{uuid}', '{current_datetime}', {system_id}, {intent_id}, '', 0, 1, '', DEFAULT);"
             cursor.execute(query)
-            last_item = cursor.fetchone()
             db_connection.commit()
-            last_item_id = last_item[0]
-
-
-            # Update the specified column for the last item
-            update_query = f"UPDATE conversations SET thumbs_down = %s WHERE conversation_id = %s"
-            cursor.execute(update_query, (1, last_item_id))
-            
             cursor.close()
             
             return jsonify("Thumbs down counter updated successfully")
@@ -342,8 +360,11 @@ def updateQuestion():
             new_question = data.get("new_question")
 
             cursor = db_connection.cursor()
-            query = f"UPDATE questions SET question = '{new_question}' WHERE question_id = {question_id};"
-            cursor.execute(query)
+
+            # Use parameterized query to avoid SQL injection
+            query = "UPDATE questions SET question = %s WHERE question_id = %s;"
+            cursor.execute(query, (new_question, question_id))
+            
             db_connection.commit()
             cursor.close()
 
@@ -382,11 +403,12 @@ def updatestep():
 
             cursor = db_connection.cursor()
 
-            query_steps = f"UPDATE steps SET step_dict = '{json.dumps(new_step)}' WHERE intent_id = {intent_id};"
-            cursor.execute(query_steps)
+            # Use parameterized query to avoid SQL injection
+            query_steps = "UPDATE steps SET step_dict = %s WHERE intent_id = %s;"
+            cursor.execute(query_steps, (json.dumps(new_step), intent_id))
 
-            query_intents = f"UPDATE intents SET steps_count = '{len(new_step)}', last_edited = '{current_datetime}' WHERE intent_id = {intent_id};"
-            cursor.execute(query_intents)
+            query_intents = "UPDATE intents SET steps_count = %s, last_edited = %s WHERE intent_id = %s;"
+            cursor.execute(query_intents, (len(new_step), current_datetime, intent_id))
 
             db_connection.commit()
             cursor.close()
@@ -413,7 +435,7 @@ def deleteStep():
 
         except Exception as e:
             return jsonify(str(e))
-        
+'''       
 @app.route('/nextStep', methods=['POST'])
 def nextStep():
     if request.method == 'POST':
@@ -434,6 +456,42 @@ def nextStep():
 
         except Exception as e:
             return jsonify(str(e))
+'''
+@app.route('/nextStep', methods=['POST'])
+def nextStep():
+    if request.method == 'POST':
+        try:
+            data = request.json
+            response = data.get("response")
+            conditions = data.get("conditions")
+            cursor = db_connection.cursor()
+
+            if conditions:
+                query = f"SELECT * FROM steps WHERE intent_id = {response['intent_id']}"
+                cursor.execute(query)
+                items = cursor.fetchall()
+                cursor.close()
+
+                json_array = items[0][3]
+
+                rule = find_matching_rule(json.loads(json_array), conditions, response['id'])
+                return jsonify(rule)
+            
+            else:
+                query = f"SELECT step_dict FROM steps WHERE intent_id = '{response['intent_id']}';"
+                cursor.execute(query)
+                item = cursor.fetchone()  # Use fetchone to get a single row
+                cursor.close()
+
+                if item:
+                    response_data = json.loads(item[0])  # Access the first column from the tuple
+                    return jsonify(response_data[response['id']])
+                else:
+                    return jsonify({"error": "No matching record found"})
+                
+        except Exception as e:
+            return jsonify(str(e))
+
 
 @app.route('/goToStep', methods=['GET'])  
 def goToStep():
@@ -455,7 +513,47 @@ def goToStep():
         except Exception as e:
             return jsonify(str(e))
         
+@app.route('/getSynonyms', methods=['GET'])  
+def getSynonyms():
+    if request.method == 'GET':
+        try:
+            system_id = request.args.get('system_id')
+            cursor = db_connection.cursor()
+            query = f"SELECT * FROM synonyms WHERE system_id = '{system_id}';"
+            cursor.execute(query)
+            items = cursor.fetchall()
+            json_array = [{'synonym_id': item[0], 'old_value': item[2], 'new_value': item[3]} for item in items]
+            cursor.close()
 
+            return jsonify(json_array)
+
+        except Exception as e:
+            return jsonify(str(e))
+
+
+@app.route('/updateSynonyms', methods=['POST'])
+def updateSynonyms():
+    if request.method == 'POST':
+        try:
+            data = request.json
+            systemID = data.get("system_id")
+            synonyms = data.get("synonyms")
+
+            cursor = db_connection.cursor()
+            query = f"DELETE FROM synonyms WHERE system_id = '{systemID}'"
+            cursor.execute(query)
+
+            for key, values in synonyms.items():
+                for value in values:
+                    query = f"INSERT INTO synonyms (synonym_id, old_value, new_value, system_id) VALUES (DEFAULT, %s, %s, %s);"
+                    cursor.execute(query, (value, key, systemID))
+            db_connection.commit()
+            cursor.close()
+
+            return jsonify({"status": "success"})
+
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)})
 
 
 #sending questions do machine learning   
@@ -474,7 +572,7 @@ def sendQuestions():
             query_intents = f"UPDATE intents SET examples_count = '{questions_len}', last_edited = '{current_datetime}' WHERE intent_id = {intent_id};"
             cursor.execute(query_intents)
 
-            query = f"SELECT * FROM questions WHERE system_id = '{system_id}'"   #promijeniti kasnije
+            query = f"SELECT * FROM questions WHERE system_id = '{system_id}'"
             cursor.execute(query)
             items = cursor.fetchall()
             json_array = [{'question': item[1], 'intent_id': item[2]} for item in items]
@@ -524,15 +622,37 @@ def send_data_to_machine_learning(data, type):
         # Handle error cases
         return {'error': 'Failed to retrieve data from the other backend'}
     
+@app.route('/updateConversationTmp', methods=['POST'])
+def updateConversationTmp():
+    if request.method == 'POST':
+        try:
+            data = request.json
+            uuid = data.get("uuid")
+            systemID = data.get("system_id")
+            intent_id = data.get("intent_id")
+            question = data.get("question")
+            threshold = data.get("threshold")
+            response = data.get("response")
 
-def updateConversation(uuid, systemID, intent_id, text):
+            updateConversation(uuid, systemID, intent_id, "KORISNIK: " + question, threshold)
+            updateConversation(uuid, systemID, intent_id, "CHATBOT: " + response['assistant_answer'], '')
+
+            return jsonify({"status": "success"})
+
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)})
+    
+
+def updateConversation(uuid, systemID, intent_id, text, threshold):
     # Calculate the timestamp with a timezone offset of +2 hours
     current_datetime = (datetime.utcnow() + timedelta(hours=2)).strftime('%Y-%m-%d %H:%M:%S')
 
-    # Insert a new intent into the database
+    # Insert a new intent into the database using parameterized query
     cursor = db_connection.cursor()
-    query = f"INSERT INTO conversations (uuid, time, system_id, intent_id, text, thumbs_up, thumbs_down, conversation_id) VALUES ('{uuid}', '{current_datetime}', {systemID}, {intent_id}, '{text}', 0, 0, DEFAULT);"
-    cursor.execute(query)
+    query = "INSERT INTO conversations (uuid, time, system_id, intent_id, text, threshold, thumbs_up, thumbs_down, conversation_id) VALUES (%s, %s, %s, %s, %s, %s, 0, 0, DEFAULT);"
+    values = (uuid, current_datetime, systemID, intent_id, text, threshold)
+
+    cursor.execute(query, values)
     db_connection.commit()
     cursor.close()
 
@@ -545,20 +665,24 @@ def chatbotSentMessage():
             question = data.get("question")
             uuid = data.get("uuid")
 
+            # Open a cursor
+            cursor = db_connection.cursor()
+
+            # Replace synonyms in the question
+            replaced_question = replace_synonyms(question, cursor, systemID)
+
             transformed_question = {
                 "SessionID": uuid,
                 "SystemID": systemID,
-                "QuestionText": question
+                "QuestionText": replaced_question
             }
-
             json_question = json.dumps(transformed_question)
             response_from_other_backend = send_data_to_machine_learning(json_question, 'query')
-            if response_from_other_backend['PredictedIntent']['Confidence'] < 0.9 and  response_from_other_backend['PredictedIntent']['Confidence'] > 0.75:
+            if response_from_other_backend['PredictedIntent']['Confidence'] < 0.93 and  response_from_other_backend['PredictedIntent']['Confidence'] > 0.8:
                 result = []  # Store intent objects with both name and id
                 predicted_intents = send_data_to_machine_learning(json_question, 'query/4')
                 for predicted_intent in predicted_intents:
                     intent_id = predicted_intent['PredictedIntent']['IntentID']
-                    cursor = db_connection.cursor()
                     query = f"SELECT intent_name FROM intents WHERE intent_id = {intent_id}"
                     cursor.execute(query)
                     intent_name = cursor.fetchall()
@@ -566,11 +690,13 @@ def chatbotSentMessage():
 
                     intent_object = {
                         'intent_name': intent_name[0][0],
-                        'intent_id': intent_id
+                        'intent_id': intent_id,
+                        'question': question,
+                        'threshold': response_from_other_backend['PredictedIntent']['Confidence'],
                     }
                     result.append(intent_object)
 
-            elif response_from_other_backend['PredictedIntent']['Confidence'] >= 0.9:
+            elif response_from_other_backend['PredictedIntent']['Confidence'] >= 0.93:
                 intent_id = response_from_other_backend['PredictedIntent']['IntentID']
                 cursor = db_connection.cursor()
                 query = f"SELECT * FROM steps WHERE intent_id = {intent_id}"
@@ -583,10 +709,11 @@ def chatbotSentMessage():
                 cursor.close()
                 result = json.loads(json_array)[0]
                 result['intent_id'] = intent_id
-                updateConversation(uuid, systemID, intent_id, question)
-                updateConversation(uuid, systemID, intent_id, result['assistant_answer'])
+                updateConversation(uuid, systemID, intent_id, "KORISNIK: " + question, response_from_other_backend['PredictedIntent']['Confidence'])
+                updateConversation(uuid, systemID, intent_id, "CHATBOT: " + result['assistant_answer'], '')
             
             else:
+                updateConversation(uuid, systemID, -1, "KORISNIK: " + question, response_from_other_backend['PredictedIntent']['Confidence'])
                 result = "Možda mogu ponuditi bolji odgovor ako preformulirate Vaše pitanje."
 
             # Return the JSON string as a JSON response
@@ -594,6 +721,25 @@ def chatbotSentMessage():
 
         except Exception as e:
             return jsonify(str(e))
+        
+
+def replace_synonyms(question, cursor, system_id):
+    # Fetch all synonyms from the database
+    cursor.execute("SELECT old_value, new_value FROM synonyms WHERE system_id = %s", system_id)
+    synonym_pairs = cursor.fetchall()
+
+    # If synonym_pairs is empty, return the original question
+    if not synonym_pairs:
+        return question
+
+    # Create a dictionary for quick lookup
+    synonyms_dict = {old: new for old, new in synonym_pairs}
+
+    # Replace old values with new values in the question
+    replaced_question = re.sub(r'\b(' + '|'.join(re.escape(key) for key in synonyms_dict.keys()) + r')\b',
+                               lambda x: synonyms_dict[x.group()], question, flags=re.IGNORECASE)
+
+    return replaced_question
 
 
 
@@ -609,7 +755,7 @@ def chatbotUserResponse():
             systemID = data.get("systemID")
             answer = data.get("answer")
 
-            updateConversation(uuid, systemID, intentID, answer)
+            updateConversation(uuid, systemID, intentID, "KORISNIK: " + answer, '')
 
             cursor = db_connection.cursor()
             query = f"SELECT * FROM steps WHERE intent_id = {intentID}"
@@ -620,7 +766,7 @@ def chatbotUserResponse():
             json_array = items[0][3]
 
             rule = find_matching_rule(json.loads(json_array), conditions, id)
-            updateConversation(uuid, systemID, intentID, rule['assistant_answer'])
+            updateConversation(uuid, systemID, intentID, "CHATBOT: " + rule['assistant_answer'], '')
 
             return jsonify(rule)
 
@@ -629,11 +775,6 @@ def chatbotUserResponse():
         
 
 def find_matching_rule(rules, conditions, id):
-    # Replace "subject" with the corresponding rule ID
-    for condition in conditions:
-        for rule in rules:
-            if condition["subject"] == rule["assistant_answer"]:
-                condition["subject"] = rule["id"]
     for index in range(id, len(rules)):
         # Check if all conditions must be true or only one condition must be true
         if rules[index].get("conditions", {}).get("allConditionsMustBeTrue", False):
@@ -642,7 +783,7 @@ def find_matching_rule(rules, conditions, id):
             if all(
                 any(
                     (
-                        c.get("subject") == condition.get("subject")
+                        c.get("answer").replace("&nbsp;", "\xa0") == condition.get("subject")
                         and c.get("predicate") == condition.get("predicate")
                         and c.get("object") == condition.get("object")
                     )
@@ -657,7 +798,7 @@ def find_matching_rule(rules, conditions, id):
             if any(
                 any(
                     (
-                        c.get("subject") == condition.get("subject")
+                        c.get("answer").replace("&nbsp;", "\xa0") == condition.get("subject")
                         and c.get("predicate") == condition.get("predicate")
                         and c.get("object") == condition.get("object")
                     )
