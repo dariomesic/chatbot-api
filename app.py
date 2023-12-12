@@ -84,7 +84,7 @@ def getConversationsForSystem():
             cursor.execute(query)
         
             items = cursor.fetchall()
-            json_array = [{'conversation_id': item[0], 'session_id': item[1], 'time': item[2], 'system_id': item[3], 'intent_id': item[4], 'text': item[5], 'thumbs_up': item[6], 'thumbs_down': item[7], 'threshold': item[8]} for item in items]
+            json_array = [{'conversation_id': item[0], 'session_id': item[1], 'time': item[2], 'system_id': item[3], 'intent_id': item[4], 'text': item[5], 'thumbs_up': item[6], 'thumbs_down': item[7], 'threshold': item[8], 'intent_name': item[9]} for item in items]
 
             # Convert the list of dictionaries to a objects
             conversations = json.dumps(json_array, indent=8, sort_keys=True, default=str) #fixing datetime bug on json parse
@@ -152,6 +152,49 @@ def getRulesForIntent():
 
             # Return the JSON string as a JSON response
             return jsonify(json_array)
+
+        except Exception as e:
+            return jsonify(str(e))
+        
+@app.route('/getThresholdsBySystemId', methods=['GET'])
+def getThresholdsBySystemId():
+    if request.method == 'GET':
+        try:
+            system_id = request.args.get('system_id')
+            cursor = db_connection.cursor()
+            query = f"SELECT * FROM thresholds WHERE system_id = {system_id}"
+            cursor.execute(query)
+
+            items = cursor.fetchall()
+            json_array = [{'percentage_upper': item[2], 'percentage_lower': item[3]} for item in items]
+            
+            # Convert the list of dictionaries to a objects
+            intents = json.dumps(json_array, indent=2, sort_keys=True, default=str) #fixing datetime bug on json parse
+
+            cursor.close()
+
+            return intents
+
+        except Exception as e:
+            return jsonify(str(e))
+        
+@app.route('/updateThresholdsBySystemId', methods=['GET'])
+def updateThresholdsBySystemId():
+    if request.method == 'GET':
+        try:
+            system_id = request.args.get('system_id')
+            percentage_upper = request.args.get('percentage_upper')
+            percentage_lower = request.args.get('percentage_lower')
+            cursor = db_connection.cursor()
+            query = f"UPDATE thresholds SET percentage_upper = {percentage_upper}, percentage_lower = {percentage_lower} WHERE system_id = {system_id}"
+            cursor.execute(query)
+
+            db_connection.commit()
+
+            cursor.close()
+
+            # Return the JSON string as a JSON response
+            return jsonify("Thresholds updated successfully!")
 
         except Exception as e:
             return jsonify(str(e))
@@ -317,8 +360,11 @@ def thumbsUp():
             system_id = request.args.get("system_id")
 
             current_datetime = (datetime.utcnow() + timedelta(hours=2)).strftime('%Y-%m-%d %H:%M:%S')
-
-            query = f"INSERT INTO conversations (uuid, time, system_id, intent_id, text, thumbs_up, thumbs_down, threshold, conversation_id) VALUES ('{uuid}', '{current_datetime}', {system_id}, {intent_id}, '', 1, 0, '', DEFAULT);"
+            # Find intent_name from id
+            query = f"SELECT intent_name FROM intents WHERE intent_id = {intent_id}"
+            cursor.execute(query)
+            items = cursor.fetchall()
+            query = f"INSERT INTO conversations (uuid, time, system_id, intent_id, text, thumbs_up, thumbs_down, threshold, conversation_id, intent_name) VALUES ('{uuid}', '{current_datetime}', {system_id}, {intent_id}, '', 1, 0, '', DEFAULT, '{items[0][0]}');"
             cursor.execute(query)
             db_connection.commit()
             cursor.close()
@@ -338,8 +384,11 @@ def thumbsDown():
             system_id = request.args.get("system_id")
 
             current_datetime = (datetime.utcnow() + timedelta(hours=2)).strftime('%Y-%m-%d %H:%M:%S')
-
-            query = f"INSERT INTO conversations (uuid, time, system_id, intent_id, text, thumbs_up, thumbs_down, threshold, conversation_id) VALUES ('{uuid}', '{current_datetime}', {system_id}, {intent_id}, '', 0, 1, '', DEFAULT);"
+            # Find intent_name from id
+            query = f"SELECT intent_name FROM intents WHERE intent_id = {intent_id}"
+            cursor.execute(query)
+            items = cursor.fetchall()
+            query = f"INSERT INTO conversations (uuid, time, system_id, intent_id, text, thumbs_up, thumbs_down, threshold, conversation_id, intent_name) VALUES ('{uuid}', '{current_datetime}', {system_id}, {intent_id}, '', 0, 1, '', DEFAULT, '{items[0][0]}');"
             cursor.execute(query)
             db_connection.commit()
             cursor.close()
@@ -435,28 +484,7 @@ def deleteStep():
 
         except Exception as e:
             return jsonify(str(e))
-'''       
-@app.route('/nextStep', methods=['POST'])
-def nextStep():
-    if request.method == 'POST':
-        try:
-            data = request.json
-            response = data.get("response")
-            cursor = db_connection.cursor()
-            query = f"SELECT step_dict FROM steps WHERE intent_id = '{response['intent_id']}';"
-            cursor.execute(query)
-            item = cursor.fetchone()  # Use fetchone to get a single row
-            cursor.close()
 
-            if item:
-                response_data = json.loads(item[0])  # Access the first column from the tuple
-                return jsonify(response_data[response['id']])
-            else:
-                return jsonify({"error": "No matching record found"})
-
-        except Exception as e:
-            return jsonify(str(e))
-'''
 @app.route('/nextStep', methods=['POST'])
 def nextStep():
     if request.method == 'POST':
@@ -647,11 +675,21 @@ def updateConversation(uuid, systemID, intent_id, text, threshold):
     # Calculate the timestamp with a timezone offset of +2 hours
     current_datetime = (datetime.utcnow() + timedelta(hours=2)).strftime('%Y-%m-%d %H:%M:%S')
 
-    # Insert a new intent into the database using parameterized query
     cursor = db_connection.cursor()
-    query = "INSERT INTO conversations (uuid, time, system_id, intent_id, text, threshold, thumbs_up, thumbs_down, conversation_id) VALUES (%s, %s, %s, %s, %s, %s, 0, 0, DEFAULT);"
-    values = (uuid, current_datetime, systemID, intent_id, text, threshold)
 
+    # Find intent_name from id only if intent_id is not -1
+    if intent_id != -1:
+        query = f"SELECT intent_name FROM intents WHERE intent_id = {intent_id}"
+        cursor.execute(query)
+        items = cursor.fetchall()
+        intent_name = items[0][0]
+    else:
+        # If intent_id is -1, set intent_name to 'nedefinirano'
+        intent_name = 'nedefinirano'
+
+    # Insert a new intent into the database using parameterized query
+    query = "INSERT INTO conversations (uuid, time, system_id, intent_id, text, threshold, thumbs_up, thumbs_down, conversation_id, intent_name) VALUES (%s, %s, %s, %s, %s, %s, 0, 0, DEFAULT, %s);"
+    values = (uuid, current_datetime, systemID, intent_id, text, threshold, intent_name)
     cursor.execute(query, values)
     db_connection.commit()
     cursor.close()
@@ -686,7 +724,6 @@ def chatbotSentMessage():
                     query = f"SELECT intent_name FROM intents WHERE intent_id = {intent_id}"
                     cursor.execute(query)
                     intent_name = cursor.fetchall()
-                    cursor.close()
 
                     intent_object = {
                         'intent_name': intent_name[0][0],
@@ -706,7 +743,6 @@ def chatbotSentMessage():
 
                 # Extract the JSON string from the database result
                 json_array = items[0][3]
-                cursor.close()
                 result = json.loads(json_array)[0]
                 result['intent_id'] = intent_id
                 updateConversation(uuid, systemID, intent_id, "KORISNIK: " + question, response_from_other_backend['PredictedIntent']['Confidence'])
@@ -715,6 +751,7 @@ def chatbotSentMessage():
             else:
                 updateConversation(uuid, systemID, -1, "KORISNIK: " + question, response_from_other_backend['PredictedIntent']['Confidence'])
                 result = "Možda mogu ponuditi bolji odgovor ako preformulirate Vaše pitanje."
+            cursor.close()
 
             # Return the JSON string as a JSON response
             return jsonify(result)
@@ -776,6 +813,11 @@ def chatbotUserResponse():
 
 def find_matching_rule(rules, conditions, id):
     for index in range(id, len(rules)):
+        # Check if the "conditions" key is empty
+        if not rules[index].get("conditions", {}).get("conditionsList"):
+            rules[index]['id'] = index + 1
+            return rules[index]
+
         # Check if all conditions must be true or only one condition must be true
         if rules[index].get("conditions", {}).get("allConditionsMustBeTrue", False):
             # Check if all conditions in conditionsList match any condition in the list
@@ -791,6 +833,7 @@ def find_matching_rule(rules, conditions, id):
                 )
                 for c in conditions_list
             ):
+                rules[index]['id'] = index + 1
                 return rules[index]
         else:
             # Check if at least one condition in conditionsList matches any condition in the list
@@ -806,8 +849,10 @@ def find_matching_rule(rules, conditions, id):
                 )
                 for c in conditions_list
             ):
+                rules[index]['id'] = index + 1
                 return rules[index]
     return None  # No matching rule found
+
 
 
 if __name__ == '__main__':
