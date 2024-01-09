@@ -2,7 +2,13 @@ from flask import Flask, request, jsonify
 import re
 from datetime import datetime, timedelta
 import psycopg2, json, requests
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.application import MIMEApplication
+from flask_cors import CORS  # Add this import
 app = Flask(__name__)
+CORS(app)
 
 # Database configuration
 db_connection = psycopg2.connect(
@@ -502,7 +508,7 @@ def nextStep():
 
                 json_array = items[0][3]
 
-                rule = find_matching_rule(json.loads(json_array), conditions, response['id'])
+                rule = find_matching_rule(json.loads(json_array), conditions, int(response['position']) + 1)
                 return jsonify(rule)
             
             else:
@@ -513,7 +519,9 @@ def nextStep():
 
                 if item:
                     response_data = json.loads(item[0])  # Access the first column from the tuple
-                    return jsonify(response_data[response['id']])
+                    result = response_data[int(response['position']) + 1]
+                    result['position'] = int(response['position']) + 1
+                    return jsonify(result)
                 else:
                     return jsonify({"error": "No matching record found"})
                 
@@ -534,7 +542,9 @@ def goToStep():
             cursor.close()
             if item:
                 response_data = json.loads(item[0])  # Access the first column from the tuple
-                return jsonify(response_data[int(id) - 1])
+                result = response_data[int(id) - 1]
+                result['position'] = int(id) - 1
+                return jsonify(result)
             else:
                 return jsonify({"error": "No matching record found"})
 
@@ -582,6 +592,94 @@ def updateSynonyms():
 
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
+        
+
+@app.route('/sendMail', methods=['POST'])
+def sendMail():
+    if request.method == 'POST':
+        try:
+            data = request.json
+            response = data.get("response")
+            session_id = data.get("session_id")
+            mail_data = data.get("data")
+            conditions = data.get("conditions")
+            systemID = data.get("systemID")
+
+            if response:
+                updateConversation(session_id, systemID, response['intent_id'], "KORISNIK ŠALJE MAIL: " + mail_data, '')
+
+            # Set up the SMTP server
+            smtp_server = '172.31.0.21'
+            smtp_port = 25
+
+            # Create the MIME object
+            mail_options = response['mail_options']
+            msg = MIMEMultipart()
+            msg['From'] = 'MPU_projekt@pravosudje.hr'
+            # Handle multiple recipients in 'To' field
+            msg['To'] = ', '.join(mail_options.get('Prima', '').split(','))
+            msg['Subject'] = mail_options['Naslov']
+            msg['Date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            # Check if 'Kopija' field is present and handle multiple recipients
+            if 'Kopija' in mail_options:
+                msg['Copy'] = ','.join(mail_options['Kopija'].split(','))
+            
+            mail_options_start = mail_options['Početak maila']
+            mail_data_text = mail_data
+            mail_options_end = mail_options['Kraj maila']
+            # Concatenate the parts with line breaks
+            email_body = f"{mail_options_start}\n{mail_data_text}\n{mail_options_end}"
+            # Attach the email body
+            msg.attach(MIMEText(email_body, 'plain'))
+
+
+            # Add attachment if provided
+            cursor = db_connection.cursor()
+            if mail_options['Privitak']:
+                query = f"SELECT text FROM conversations WHERE uuid = '{session_id}'"
+                cursor.execute(query)
+                items = cursor.fetchall()
+
+                # Extract the values from the result set
+                column_values = [item[0] for item in items]  # Adjust the index based on your database structure
+
+                # Concatenate the values into a single string with HTML line breaks
+                concatenated_text = "<br>".join(column_values)
+
+                # Save the concatenated text to an HTML file
+                attachment_filename = "attachment.html"
+                with open(attachment_filename, "w", encoding="utf-8") as attachment_file:
+                    attachment_file.write(concatenated_text)
+
+                # Attach the file to the email
+                with open(attachment_filename, "rb") as attachment:
+                    part = MIMEApplication(attachment.read(), Name=attachment_filename)
+                part['Content-Disposition'] = f'attachment; filename="{attachment_filename}"'
+                msg.attach(part)
+            
+            # Connect to the SMTP server using SSL/TLS
+            with smtplib.SMTP(smtp_server, smtp_port) as server:
+                # Combine 'To' and 'Copy' recipients
+                recipients = [msg['To']]
+                if 'Copy' in msg:
+                    recipients += [msg['Copy']]
+                # Send the email to both 'To' and 'Copy' recipients
+                server.sendmail(msg['From'], recipients, msg.as_string())
+
+
+            query = f"SELECT * FROM steps WHERE intent_id = {response['intent_id']}"
+            cursor.execute(query)
+            items = cursor.fetchall()
+            cursor.close()
+
+            json_array = items[0][3]
+
+            rule = find_matching_rule(json.loads(json_array), conditions, int(response['position']) + 1)
+            return jsonify(rule)
+
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)})
+
 
 
 #sending questions do machine learning   
@@ -605,35 +703,88 @@ def sendQuestions():
             items = cursor.fetchall()
             json_array = [{'question': item[1], 'intent_id': item[2]} for item in items]
 
-            # Initialize an empty list to store the transformed data
-            transformed_data = []
+            # Initialize a dictionary to store the transformed data
+            transformed_data = {}
 
             # Iterate over each item in the database data
             for item in json_array:
-                # Create a new dictionary in the desired format
-                transformed_item = {
-                    "IntentID": str(item["intent_id"]),
-                    "SystemID": system_id,
-                    "Questions": [
-                        {
-                            "QuestionText": item["question"]
-                        }
-                    ]
-                }
-                # Append the transformed item to the result list
-                transformed_data.append(transformed_item)
+                intent_id = str(item["intent_id"])
+                question_text = item["question"]
+
+                # If the intent_id is not in the dictionary, add it
+                if intent_id not in transformed_data:
+                    transformed_data[intent_id] = {
+                        "IntentID": intent_id,
+                        "SystemID": system_id,
+                        "Questions": []
+                    }
+
+                # Append the question text to the Questions list
+                transformed_data[intent_id]["Questions"].append({
+                    "QuestionText": question_text
+                })
+
+            # Convert the values of the dictionary to a list
+            transformed_data_list = list(transformed_data.values())
 
             db_connection.commit()
             cursor.close()
 
-            json_data = json.dumps(transformed_data)
+            json_data = json.dumps(transformed_data_list)
 
             response_from_other_backend = send_data_to_machine_learning(json_data, 'train')
-
             return jsonify(response_from_other_backend)
 
         except Exception as e:
             return jsonify(str(e))
+
+#reloading questions from machine learning   
+@app.route('/reloadQuestions', methods=['GET'])
+def reloadQuestions():
+    if request.method == 'GET':
+        try:
+            system_id = request.args.get('system_id')
+
+            cursor = db_connection.cursor()
+            query = f"SELECT * FROM questions WHERE system_id = '{system_id}'"
+            cursor.execute(query)
+            items = cursor.fetchall()
+            json_array = [{'question': item[1], 'intent_id': item[2]} for item in items]
+
+            # Initialize a dictionary to store the transformed data
+            transformed_data = {}
+
+            # Iterate over each item in the database data
+            for item in json_array:
+                intent_id = str(item["intent_id"])
+                question_text = item["question"]
+
+                # If the intent_id is not in the dictionary, add it
+                if intent_id not in transformed_data:
+                    transformed_data[intent_id] = {
+                        "IntentID": intent_id,
+                        "SystemID": system_id,
+                        "Questions": []
+                    }
+
+                # Append the question text to the Questions list
+                transformed_data[intent_id]["Questions"].append({
+                    "QuestionText": question_text
+                })
+
+            # Convert the values of the dictionary to a list
+            transformed_data_list = list(transformed_data.values())
+
+            db_connection.commit()
+            cursor.close()
+
+            json_data = json.dumps(transformed_data_list)
+            response_from_other_backend = send_data_to_machine_learning(json_data, 'train')
+            return jsonify(response_from_other_backend)
+
+        except Exception as e:
+            return jsonify(str(e))
+
         
 def send_data_to_machine_learning(data, type):
     # Define the URL of the other backend API
@@ -700,7 +851,7 @@ def chatbotSentMessage():
         try:
             data = request.json
             systemID = data.get("systemID")
-            question = data.get("question")
+            question = data.get("question").capitalize()    #first letter uppercase
             uuid = data.get("uuid")
 
             # Open a cursor
@@ -715,38 +866,74 @@ def chatbotSentMessage():
                 "QuestionText": replaced_question
             }
             json_question = json.dumps(transformed_question)
+
+            query = f"SELECT percentage_upper, percentage_lower FROM thresholds WHERE system_id = {systemID}"
+            cursor.execute(query)
+            thresholds = cursor.fetchall()[0]
             response_from_other_backend = send_data_to_machine_learning(json_question, 'query')
-            if response_from_other_backend['PredictedIntent']['Confidence'] < 0.93 and  response_from_other_backend['PredictedIntent']['Confidence'] > 0.8:
+            if response_from_other_backend['PredictedIntent']['Confidence'] < (thresholds[0]/100) and  response_from_other_backend['PredictedIntent']['Confidence'] > (thresholds[1]/100):
                 result = []  # Store intent objects with both name and id
-                predicted_intents = send_data_to_machine_learning(json_question, 'query/4')
+                predicted_intents = send_data_to_machine_learning(json_question, 'query/8')
                 for predicted_intent in predicted_intents:
                     intent_id = predicted_intent['PredictedIntent']['IntentID']
                     query = f"SELECT intent_name FROM intents WHERE intent_id = {intent_id}"
                     cursor.execute(query)
                     intent_name = cursor.fetchall()
 
+                    confidence = predicted_intent['PredictedIntent'].get('Confidence', 0.0)
+
                     intent_object = {
                         'intent_name': intent_name[0][0],
                         'intent_id': intent_id,
                         'question': question,
-                        'threshold': response_from_other_backend['PredictedIntent']['Confidence'],
+                        'threshold': confidence,
                     }
                     result.append(intent_object)
 
-            elif response_from_other_backend['PredictedIntent']['Confidence'] >= 0.93:
-                intent_id = response_from_other_backend['PredictedIntent']['IntentID']
-                cursor = db_connection.cursor()
-                query = f"SELECT * FROM steps WHERE intent_id = {intent_id}"
-                cursor.execute(query)
+            elif response_from_other_backend['PredictedIntent']['Confidence'] >= (thresholds[0]/100):
+                predicted_intents = send_data_to_machine_learning(json_question, 'query/8')
+                first_object = predicted_intents[0]
 
-                items = cursor.fetchall()
+                # Filter objects with the same Confidence as the first object
+                filtered_objects = [obj for obj in predicted_intents if obj['PredictedIntent']['Confidence'] == first_object['PredictedIntent']['Confidence']]
 
-                # Extract the JSON string from the database result
-                json_array = items[0][3]
-                result = json.loads(json_array)[0]
-                result['intent_id'] = intent_id
-                updateConversation(uuid, systemID, intent_id, "KORISNIK: " + question, response_from_other_backend['PredictedIntent']['Confidence'])
-                updateConversation(uuid, systemID, intent_id, "CHATBOT: " + result['assistant_answer'], '')
+                if len(filtered_objects) > 1:
+                    # Check if there are more than one object with different IntentID
+                    intent_ids = set(obj['PredictedIntent']['IntentID'] for obj in filtered_objects)
+
+                    if len(intent_ids) > 1:
+                        result = []  # Store intent objects with both name and id
+                        for predicted_intent in filtered_objects:
+                            intent_id = predicted_intent['PredictedIntent']['IntentID']
+                            query = f"SELECT intent_name FROM intents WHERE intent_id = {intent_id}"
+                            cursor.execute(query)
+                            intent_name = cursor.fetchall()
+
+                            confidence = predicted_intent['PredictedIntent'].get('Confidence', 0.0)
+
+                            intent_object = {
+                                'intent_name': intent_name[0][0],
+                                'intent_id': intent_id,
+                                'question': question,
+                                'threshold': confidence,
+                            }
+                            result.append(intent_object)
+                    # Else return that one different IntentID
+                    else:
+                        intent_id = response_from_other_backend['PredictedIntent']['IntentID']
+                        cursor = db_connection.cursor()
+                        query = f"SELECT * FROM steps WHERE intent_id = {intent_id}"
+                        cursor.execute(query)
+
+                        items = cursor.fetchall()
+
+                        # Extract the JSON string from the database result
+                        json_array = items[0][3]
+                        result = json.loads(json_array)[0]
+                        result['intent_id'] = intent_id
+                        result['position'] = 0
+                        updateConversation(uuid, systemID, intent_id, "KORISNIK: " + question, response_from_other_backend['PredictedIntent']['Confidence'])
+                        updateConversation(uuid, systemID, intent_id, "CHATBOT: " + result['assistant_answer'], '')
             
             else:
                 updateConversation(uuid, systemID, -1, "KORISNIK: " + question, response_from_other_backend['PredictedIntent']['Confidence'])
@@ -756,8 +943,8 @@ def chatbotSentMessage():
             # Return the JSON string as a JSON response
             return jsonify(result)
 
-        except Exception as e:
-            return jsonify(str(e))
+        except Exception:
+            return jsonify("Sustav je trenutno u procesu učenja. Molim Vas pokušajte ponovno kasnije.")
         
 
 def replace_synonyms(question, cursor, system_id):
@@ -802,7 +989,7 @@ def chatbotUserResponse():
 
             json_array = items[0][3]
 
-            rule = find_matching_rule(json.loads(json_array), conditions, id)
+            rule = find_matching_rule(json.loads(json_array), conditions, int(id) + 1)
             updateConversation(uuid, systemID, intentID, "CHATBOT: " + rule['assistant_answer'], '')
 
             return jsonify(rule)
@@ -815,7 +1002,7 @@ def find_matching_rule(rules, conditions, id):
     for index in range(id, len(rules)):
         # Check if the "conditions" key is empty
         if not rules[index].get("conditions", {}).get("conditionsList"):
-            rules[index]['id'] = index + 1
+            rules[index]['position'] = index
             return rules[index]
 
         # Check if all conditions must be true or only one condition must be true
@@ -833,7 +1020,7 @@ def find_matching_rule(rules, conditions, id):
                 )
                 for c in conditions_list
             ):
-                rules[index]['id'] = index + 1
+                rules[index]['position'] = index
                 return rules[index]
         else:
             # Check if at least one condition in conditionsList matches any condition in the list
@@ -849,10 +1036,48 @@ def find_matching_rule(rules, conditions, id):
                 )
                 for c in conditions_list
             ):
-                rules[index]['id'] = index + 1
+                rules[index]['position'] = index
                 return rules[index]
     return None  # No matching rule found
 
+
+
+
+'''
+@app.route('/upload', methods=['POST'])
+def upload_file():
+    try:
+        # Get the uploaded file
+        file = request.files['file']
+        
+        # Read the Excel file into a DataFrame
+        df = pd.read_excel(file)
+
+        cursor = db_connection.cursor()
+
+        # Iterate through rows and insert data into the database
+        print(df.iterrows())
+        for index, row in df.iterrows():
+            value1 = row['question']
+            value2 = row['intent_id']
+            value3 = row['system_id']
+
+            # Adjust the SQL query based on your table structure
+            cursor.execute("INSERT INTO questions (question_id, question, intent_id, system_id) VALUES (DEFAULT, %s, %s, %s);", (value1, value2, value3))
+
+        # Commit the transaction
+        db_connection.commit()
+
+        # Close the cursor and db_connection
+        cursor.close()
+        db_connection.close()
+
+        return jsonify({"message": "Data inserted successfully"})
+
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
+'''
 
 
 if __name__ == '__main__':
