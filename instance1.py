@@ -3,22 +3,25 @@ import re
 from datetime import datetime, timedelta
 import psycopg2, json, requests
 import smtplib
-import os
-from tika import parser
-from tempfile import NamedTemporaryFile
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
 from flask_cors import CORS  # Add this import
+from tika import parser
+import os
+from tempfile import NamedTemporaryFile
+
+import time
+
 app = Flask(__name__)
 CORS(app)
 
 # Database configuration
 db_connection = psycopg2.connect(
-    dbname="postgres",
-    user="postgres",
-    password="TWbyVdR1rt%+",
-    host="3.75.212.152"
+    dbname="chatbot",
+    user="moj_chatbot",
+    password="61-eofP9dj0#",
+    host="172.20.67.195"
 )
 
 @app.route('/')
@@ -273,7 +276,7 @@ def deleteQuestionsById():
             deleted_questions = cursor.fetchall()
 
             # Create a list of dictionaries with 'question_id' and 'question_text'
-            added_items = [{'QuestionID': str(question[0]), 'QuestionText': question[1]} for question in deleted_questions]
+            added_items = [{'QuestionID': str(question[0]), 'QuestionText': question[1], 'IntentID': f'{intent_id}'} for question in deleted_questions]
 
             # Create the system_ml_questions dictionary
             system_ml_questions = [{
@@ -282,7 +285,6 @@ def deleteQuestionsById():
                 'EditedItems': [],
                 'DeletedItems': added_items
             }]
-            print(system_ml_questions)
 
             json_data = json.dumps(system_ml_questions)
             response_from_other_backend = send_data_to_machine_learning(json_data, 'train')
@@ -298,6 +300,7 @@ def deleteQuestionsById():
 
         except Exception as e:
             return jsonify(str(e))
+        
         
 @app.route('/addIntentForSystem', methods=['GET'])
 def addIntentForSystem():
@@ -619,7 +622,7 @@ def updateSynonyms():
 
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
-
+        
 @app.route('/getInitialChat', methods=['GET'])  
 def getInitialChat():
     if request.method == 'GET':
@@ -636,7 +639,7 @@ def getInitialChat():
 
         except Exception as e:
             return jsonify(str(e))
-
+        
 @app.route('/saveInitial', methods=['POST'])
 def saveInitial():
     if request.method == 'POST':
@@ -656,7 +659,7 @@ def saveInitial():
 
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
-
+        
 @app.route('/getThemes', methods=['GET'])  
 def getThemes():
     if request.method == 'GET':
@@ -695,6 +698,7 @@ def updateThemes():
 
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})        
+        
 
 @app.route('/sendMail', methods=['POST'])
 def sendMail():
@@ -708,16 +712,16 @@ def sendMail():
             systemID = data.get("systemID")
 
             if response:
-                updateConversation(session_id, systemID, response['intent_id'], "KORISNIK: " + mail_data, '', 0)
+                updateConversation(session_id, systemID, response['intent_id'], "KORISNIK ŠALJE MAIL: " + mail_data, '', 0)
 
             # Set up the SMTP server
-            smtp_server = '172.31.0.21'
+            smtp_server = '10.1.193.99'
             smtp_port = 25
 
             # Create the MIME object
             mail_options = response['mail_options']
             msg = MIMEMultipart()
-            msg['From'] = 'MPU_projekt@pravosudje.hr'
+            msg['From'] = 'MPU_projekt@pravosudje.hr <no-reply@pravosudje.hr>'
             # Handle multiple recipients in 'To' field
             msg['To'] = ', '.join(mail_options.get('Prima', '').split(','))
             msg['Subject'] = mail_options['Naslov']
@@ -768,7 +772,6 @@ def sendMail():
                 # Send the email to both 'To' and 'Copy' recipients
                 server.sendmail(msg['From'], recipients, msg.as_string())
 
-
             query = f"SELECT * FROM steps WHERE intent_id = {response['intent_id']}"
             cursor.execute(query)
             items = cursor.fetchall()
@@ -781,7 +784,7 @@ def sendMail():
 
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
-
+        
 def parse_file(file, file_extension):
     extracted_text = []
 
@@ -796,7 +799,7 @@ def parse_file(file, file_extension):
             print(body_without_tag)
             text_pages = body_without_tag.split("""<div class="page">""")
             print(text_pages)
-            for page_num, page_text in enumerate(text_pages, start=2):
+            for page_num, page_text in enumerate(text_pages, start=0):
                 extracted_text.append({'page_num': str(page_num), 'text': page_text.strip()})
 
         elif file_extension in ['.docx', '.doc']:
@@ -809,7 +812,6 @@ def parse_file(file, file_extension):
 
 @app.route('/uploadDocument', methods=['POST'])
 def uploadDocument():
-    print(request.files)
     if 'file' not in request.files:
         return jsonify({'error': 'No file part'})
     file = request.files['file']
@@ -830,17 +832,30 @@ def uploadDocument():
             
             # Insert page data into 'pages' table
             for page_num, page_text in enumerate(text, start=1):
-                query = "INSERT INTO pages (text_page, id_doc, doc_page) VALUES (%s, %s, %s);"
-                cursor.execute(query, (page_text['text'], document_id, page_text['page_num']))
+                query = "INSERT INTO pages (text_page, id_doc, doc_page, system_id) VALUES (%s, %s, %s, %s);"
+                cursor.execute(query, (page_text['text'], document_id, page_text['page_num'], request.form.get('system_id')))
 
             db_connection.commit()
             cursor.close()
-
-            requests.post('http://18.158.244.150:7000/search/train', headers={'Content-Type': 'application/json'})
-
+            
             return jsonify({"status": "success"})
+        
     except Exception as e:
         return jsonify({'error': f'Error parsing file: {str(e)}'})
+
+'''
+
+
+def parse_html(file):
+    html_text = []
+    with open(file, 'r', encoding='utf-8') as html_file:
+        soup = BeautifulSoup(html_file, 'html.parser')
+        text = soup.get_text(separator='\n', strip=True)
+        html_text.append({'page_num': 1, 'text': text})
+    return html_text
+
+'''
+    
 
 @app.route('/getDocumentsBySystemId', methods=['GET'])
 def getDocumentsBySystemId():
@@ -864,7 +879,7 @@ def getDocumentsBySystemId():
 
         except Exception as e:
             return jsonify(str(e))
-
+        
 @app.route('/searchDocuments', methods=['POST'])
 def searchDocuments():
     if request.method == 'POST':
@@ -879,12 +894,13 @@ def searchDocuments():
             }
             json_question = json.dumps(transformed_question)
 
-            response_backend = requests.post('http://18.158.244.150:7000/search/query', data=json_question, headers={'Content-Type': 'application/json'})
+            response_backend = requests.post('http://172.20.67.21:9877/search/query', data=json_question, headers={'Content-Type': 'application/json'})
 
             # Check the response_backend status code and handle accordingly
             if response_backend.status_code == 200:
                 response = response_backend.json()
                 cursor = db_connection.cursor()
+                print(response['SearchResult']['AnswerTexts'][0]['DocumentID'])
 
                 query = f"SELECT title from documents WHERE id_doc = {response['SearchResult']['AnswerTexts'][0]['DocumentID']};"
                 cursor.execute(query)
@@ -895,7 +911,7 @@ def searchDocuments():
                 cursor.execute(query_threshold)
                 items = cursor.fetchall()
                 threshold = items[0][0]
-
+                print(threshold)
                 document = {
                     'text': response['SearchResult']['AnswerTexts'][0]['Text'],
                     'document_title': name,
@@ -911,7 +927,7 @@ def searchDocuments():
 
         except Exception as e:
             return jsonify(str(e))
-
+        
 @app.route('/deleteDocumentById', methods=['DELETE'])
 def deleteDocumentById():
     if request.method == 'DELETE':
@@ -925,8 +941,6 @@ def deleteDocumentById():
             cursor.execute(query)
             db_connection.commit()
             cursor.close()
-
-            requests.post('http://18.158.244.150:7000/search/train', headers={'Content-Type': 'application/json'})
 
             return jsonify({"status": "success"})
 
@@ -955,41 +969,6 @@ def saveDocumentThreshold():
             return jsonify(str(e))
 
 
-@app.route('/bigBang', methods=['GET'])
-def bigBang():
-    if request.method == 'GET':
-        ml_questions = []
-
-        # Iterate over each system ID (1 to 4)
-        for system_id in range(1, 5):
-            cursor = db_connection.cursor()
-            query = f"SELECT * FROM questions WHERE system_id = {system_id}"
-            cursor.execute(query)
-            questions_for_system = cursor.fetchall()
-
-            # Populate addedItems array with the questions
-            added_items = [
-                {
-                    'IntentID': str(question[2]),  # Assuming intent_id is in the third column
-                    'QuestionID': str({question[0]}),  # Assuming question_id is in the first column
-                    'QuestionText': question[1]  # Assuming question is in the second column
-                }
-                for question in questions_for_system
-            ]
-
-            # Create the ml_questions object for the current system ID
-            system_ml_questions = {
-                'SystemID': str(system_id),
-                'AddedItems': added_items,
-                'EditedItems': [],
-                'DeletedItems': []
-            }
-
-            # Add the ml_questions object to the array
-            ml_questions.append(system_ml_questions)
-    json_data = json.dumps(ml_questions)
-    response_from_other_backend = send_data_to_machine_learning(json_data, 'train')
-    print(jsonify(response_from_other_backend))
 
 #sending questions do machine learning   
 @app.route('/sendQuestions', methods=['POST'])
@@ -1020,7 +999,7 @@ def sendQuestions():
         
 def send_data_to_machine_learning(data, type):
     # Define the URL of the other backend API
-    other_backend_url = 'http://18.158.244.150:5000/chatbot/' + type
+    other_backend_url = 'http://172.20.67.21:9876/chatbot/' + type
 
      # Make a POST request with JSON data
     headers = {'Content-Type': 'application/json'}  # Set the content type to JSON
@@ -1078,6 +1057,7 @@ def updateConversation(uuid, systemID, intent_id, text, threshold, delay):
     db_connection.commit()
     cursor.close()
 
+
 @app.route('/chatbotSentMessage', methods=['POST'])
 def chatbotSentMessage():
     if request.method == 'POST':
@@ -1088,7 +1068,7 @@ def chatbotSentMessage():
             uuid = data.get("uuid")
 
             cursor = db_connection.cursor()
-            
+
             # Replace synonyms in the question
             replaced_question = replace_synonyms(question, cursor, systemID)
 
@@ -1098,7 +1078,6 @@ def chatbotSentMessage():
                 "QuestionText": replaced_question
             }
             json_question = json.dumps(transformed_question)
-
             # Fetch thresholds
             query = "SELECT percentage_upper, percentage_lower FROM thresholds WHERE system_id = %s"
             cursor.execute(query, (systemID,))
@@ -1114,12 +1093,12 @@ def chatbotSentMessage():
             response_from_other_backend = send_data_to_machine_learning(json_question, 'query')
             
             if lower_threshold / 100 <= response_from_other_backend['PredictedIntent']['Confidence'] < upper_threshold / 100:
-                result = process_predicted_intents(send_data_to_machine_learning(json_question, 'query/4'), cursor, question)
+                result = process_predicted_intents(send_data_to_machine_learning(json_question, 'query/6'), cursor, question)
                 if count > 0:
                     result.append({'intent_name': 'PRETRAŽI BAZU ZNANJA', 'intent_id': -2, 'question': question, 'threshold': response_from_other_backend['PredictedIntent']['Confidence']})
             
             elif response_from_other_backend['PredictedIntent']['Confidence'] >= upper_threshold / 100:
-                predicted_intents = send_data_to_machine_learning(json_question, 'query/4')
+                predicted_intents = send_data_to_machine_learning(json_question, 'query/6')
                 first_object = predicted_intents[0]
                 
                 # Filter objects with the same Confidence as the first object
@@ -1145,7 +1124,7 @@ def chatbotSentMessage():
                     updateConversation(uuid, systemID, intent_id, "CHATBOT: " + result['assistant_answer'], '', 1)
             
             else:
-                result = process_predicted_intents(send_data_to_machine_learning(json_question, 'query/4'), cursor, question)
+                result = process_predicted_intents(send_data_to_machine_learning(json_question, 'query/6'), cursor, question)
                 if count > 0:
                     result.append({'intent_name': 'PRETRAŽI BAZU ZNANJA', 'intent_id': -2, 'question': question, 'threshold': response_from_other_backend['PredictedIntent']['Confidence']})
                 result.append({'intent_name': 'PREFORMULIRAT ĆU PITANJE', 'intent_id': -1, 'question': question, 'threshold': response_from_other_backend['PredictedIntent']['Confidence']})
@@ -1158,6 +1137,8 @@ def chatbotSentMessage():
         
 def process_predicted_intents(predicted_intents, cursor, question):
     result = []
+    greetings = ['Dobar dan', 'Dobar dan, kako si', 'Bok', 'Doviđenja']
+
     for predicted_intent in predicted_intents:
         intent_id = predicted_intent['PredictedIntent']['IntentID']
         query = f"SELECT intent_name FROM intents WHERE intent_id = {intent_id}"
@@ -1166,22 +1147,24 @@ def process_predicted_intents(predicted_intents, cursor, question):
 
         confidence = predicted_intent['PredictedIntent'].get('Confidence', 0.0)
 
-        intent_object = {
-            'intent_name': intent_name[0][0],
-            'intent_id': intent_id,
-            'question': question,
-            'threshold': confidence,
-        }
-        result.append(intent_object)
-    return result
-        
-       
+        intent_name_str = intent_name[0][0]
+
+        # Check if intent_name is in greetings list
+        if intent_name_str not in greetings:
+            intent_object = {
+                'intent_name': intent_name_str,
+                'intent_id': intent_id,
+                'question': question,
+                'threshold': confidence,
+            }
+            result.append(intent_object)
+
+    return result     
 
 def replace_synonyms(question, cursor, system_id):
-    # Fetch all synonyms from the database
-    cursor.execute("SELECT old_value, new_value FROM synonyms WHERE system_id = %s", system_id)
+    query = "SELECT old_value, new_value FROM synonyms WHERE system_id = %s"
+    cursor.execute(query, (system_id,))
     synonym_pairs = cursor.fetchall()
-
     # If synonym_pairs is empty, return the original question
     if not synonym_pairs:
         return question
@@ -1192,7 +1175,6 @@ def replace_synonyms(question, cursor, system_id):
     # Replace old values with new values in the question
     replaced_question = re.sub(r'\b(' + '|'.join(re.escape(key) for key in synonyms_dict.keys()) + r')\b',
                                lambda x: synonyms_dict[x.group()], question, flags=re.IGNORECASE)
-
     return replaced_question
 
 
@@ -1225,8 +1207,7 @@ def chatbotUserResponse():
             return jsonify(rule)
 
         except Exception as e:
-            return jsonify(str(e))
-        
+            return jsonify(str(e))        
 
 def find_matching_rule(rules, conditions, id):
     for index in range(id, len(rules)):
@@ -1239,6 +1220,7 @@ def find_matching_rule(rules, conditions, id):
         if rules[index].get("conditions", {}).get("allConditionsMustBeTrue", False):
             # Check if all conditions in conditionsList match any condition in the list
             conditions_list = rules[index].get("conditions", {}).get("conditionsList", [])
+            print(conditions_list, conditions)
             if all(
                 any(
                     (
@@ -1270,6 +1252,79 @@ def find_matching_rule(rules, conditions, id):
                 return rules[index]
     return None  # No matching rule found
 
+@app.route('/bigBang', methods=['GET'])
+def bigBang():
+    if request.method == 'GET':
+        ml_questions = []
 
+        # Iterate over each system ID (1 to 5)
+        for system_id in range(1, 6):
+            cursor = db_connection.cursor()
+            query = f"SELECT * FROM questions WHERE system_id = {system_id}"
+            cursor.execute(query)
+            questions_for_system = cursor.fetchall()
+
+            # Populate addedItems array with the questions
+            added_items = [
+                {
+                    'IntentID': str(question[2]),  # Assuming intent_id is in the third column
+                    'QuestionID': str({question[0]}),  # Assuming question_id is in the first column
+                    'QuestionText': question[1]  # Assuming question is in the second column
+                }
+                for question in questions_for_system
+            ]
+
+            # Create the ml_questions object for the current system ID
+            system_ml_questions = {
+                'SystemID': str(system_id),
+                'AddedItems': added_items,
+                'EditedItems': [],
+                'DeletedItems': []
+            }
+
+            # Add the ml_questions object to the array
+            ml_questions.append(system_ml_questions)
+    json_data = json.dumps(ml_questions)
+    response_from_other_backend = send_data_to_machine_learning(json_data, 'train')
+    print(jsonify(response_from_other_backend))
+
+@app.route('/testerForChatbot', methods=['GET'])
+def testerForChatbot():
+    if request.method == 'GET':
+        cursor = db_connection.cursor()
+        query = "SELECT step_dict FROM steps"
+        cursor.execute(query)
+
+        questions = []
+        for row in cursor.fetchall():
+            system_id, step_dict = row[0], row[1]
+            if step_dict is not None and len(step_dict) == 1:
+                query = f"SELECT * FROM questions WHERE system_id = {system_id}"
+                cursor.execute(query)
+                for item in cursor.fetchall()[0]:
+                    questions.append({'system_id': item['system_id'], 'question': item['question']})
+        print(questions)
+'''
+        initial_delay = 5
+        for i, question in enumerate(questions):
+            current_delay = initial_delay / (i + 1)
+            print(f"Sending request for question {i+1} with a delay of {current_delay} seconds")
+            time.sleep(current_delay)
+            question = {
+                "SessionID": "",
+                "SystemID": question['system_id'],
+                "QuestionText": question['step_dict']
+            }
+            make_api_requests(question, "http://172.20.67.24/chatbotSentMessage")
+
+
+def make_api_requests(question, api_url):
+     # Make a POST request with JSON data
+    headers = {'Content-Type': 'application/json'}  # Set the content type to JSON
+    response = requests.post(api_url, data=question, headers=headers)
+
+    result = response.json()
+    print(f"API Result: {result}")
+'''
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=8080)

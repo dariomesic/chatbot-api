@@ -195,7 +195,7 @@ def getInitialChat():
         try:
             system_id = request.args.get('system_id')
             cursor = db_connection.cursor()
-            query = f"SELECT * FROM initials_{system_id}_{chosen_table_dates[int(system_id) - 1]}';"
+            query = f"SELECT * FROM initials_{system_id}_{chosen_table_dates[int(system_id) - 1]};"
             cursor.execute(query)
             items = cursor.fetchall()
             json_array = [{'system_initial': item[2], 'system_name': item[3]} for item in items]
@@ -212,7 +212,7 @@ def getThemes():
         try:
             system_id = request.args.get('system_id')
             cursor = db_connection.cursor()
-            query = f"SELECT * FROM themes_{system_id}_{chosen_table_dates[int(system_id) - 1]} WHERE';"
+            query = f"SELECT * FROM themes_{system_id}_{chosen_table_dates[int(system_id) - 1]}"
             cursor.execute(query)
             items = cursor.fetchall()
             json_array = [{'intents': item[1]} for item in items]
@@ -386,17 +386,17 @@ def updateConversation(uuid, systemID, intent_id, text, threshold, delay):
     current_datetime = (datetime.utcnow() + timedelta(hours=2, seconds = delay)).strftime('%Y-%m-%d %H:%M:%S')
 
     cursor = db_connection.cursor()
-
-    # Find intent_name from id only if intent_id is not -1
-    if intent_id != -1:
-        query = f"SELECT intent_name FROM intents_{systemID}_{chosen_table_dates[int(systemID)- 1]} WHERE intent_id = {intent_id}"
+    # Find intent_name from id only if intent_id is not -1 or -2
+    if intent_id != -1 and intent_id != -2:
+        query = f"SELECT intent_name FROM intents WHERE intent_id = {intent_id}"
         cursor.execute(query)
         items = cursor.fetchall()
         intent_name = items[0][0]
-    else:
-        # If intent_id is -1, set intent_name to 'nedefinirano'
+    elif intent_id == -1:
+    	# If intent_id is -1, set intent_name to 'nedefinirano
         intent_name = 'nedefinirano'
-
+    else:
+        intent_name = 'baza znanja'
     # Insert a new intent into the database using parameterized query
     query = "INSERT INTO conversations (uuid, time, system_id, intent_id, text, threshold, thumbs_up, thumbs_down, conversation_id, intent_name) VALUES (%s, %s, %s, %s, %s, %s, 0, 0, DEFAULT, %s);"
     values = (uuid, current_datetime, systemID, intent_id, text, threshold, intent_name)
@@ -405,18 +405,36 @@ def updateConversation(uuid, systemID, intent_id, text, threshold, delay):
     cursor.close()
 
 
+
+
+@app.route('/checkForPreviousVersion', methods=['GET'])  
+def checkForPreviousVersion():
+    if request.method == 'GET':
+        systemID = request.args.get('system_id')
+        try:
+            cursor = db_connection.cursor()
+            query = f"SELECT previous_version from versions WHERE system_id = {systemID}"
+            cursor.execute(query)
+            previous_version = cursor.fetchone()
+
+            return jsonify({"previous_version": previous_version})
+            cursor.close()
+
+
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)})
+
 @app.route('/versioningBySystemId', methods=['GET'])  
 def versioningBySystemId():
     if request.method == 'GET':
-        data = request.json
-        systemID = data.get("system_id")
+        systemID = request.args.get('system_id')
         try:
+            cursor = db_connection.cursor()
             # Format the time in the desired format
-            formatted_time = datetime.utcnow().replace(tzinfo=timezone.utc).astimezone(timezone(timedelta(hours=1))).strftime('%Y_%m_%dT%H_%M_%S_%f')[:-3] + 'Z'
+            formatted_time = datetime.utcnow().replace(tzinfo=timezone.utc).astimezone(timezone(timedelta(hours=1))).strftime('%Y_%m_%dt%H_%M_%S_%f')[:-3] + 'Z'
 
             existing_tables = ['intents', 'questions', 'steps', 'synonyms', 'thresholds', 'initials', 'pages', 'themes']
-            new_tables = ['intents_' + str(systemID) + "_" + formatted_time, 'questions_' + str(systemID) + "_" + formatted_time, 'steps_' + str(systemID) + "_" + formatted_time, 'synonyms_' + str(systemID) + "_" + formatted_time, 'thresholds_' + str(systemID) + "_" + formatted_time, 'initials_' + str(systemID) + "_" + formatted_time, 'themes_' + str(systemID) + "_" + formatted_time]
-            cursor = db_connection.cursor()
+            new_tables = ['intents_' + str(systemID) + "_" + formatted_time, 'questions_' + str(systemID) + "_" + formatted_time, 'steps_' + str(systemID) + "_" + formatted_time, 'synonyms_' + str(systemID) + "_" + formatted_time, 'thresholds_' + str(systemID) + "_" + formatted_time, 'initials_' + str(systemID) + "_" + formatted_time, 'pages_' + str(systemID) + "_" + formatted_time, 'themes_' + str(systemID) + "_" + formatted_time]
 
             for existing_table, new_table in zip(existing_tables, new_tables):
                 # Step 1: Create a new table with the same structure as the existing table
@@ -430,32 +448,97 @@ def versioningBySystemId():
                 copy_data_query = f"""
                     INSERT INTO {new_table}
                     SELECT * FROM {existing_table}
-                    WHERE system_id = {systemID}
                 """
+                # Conditionally add WHERE clause for system_id except for 'steps' table
+                if existing_table != 'steps':
+                    copy_data_query += f" WHERE system_id = {str(systemID)}"
+                print(copy_data_query)
                 cursor.execute(copy_data_query)
 
-            get_chosen_table_dates()
 
-            # I sad tu ide učenje prvo 22 i onda 23
-            transformed_data = get_diff(cursor, chosen_table_dates[systemID - 1])
+            # Stanje na admin
+            cursor.execute(f"SELECT * FROM questions WHERE system_id = {systemID}")
+            current_state = cursor.fetchall()
 
-            # Convert the values of the dictionary to a list
-            transformed_data_list = list(transformed_data.values())
+            # Get the previous state from the database
+            cursor.execute(f"SELECT * FROM questions_{systemID}_{chosen_table_dates[int(systemID) - 1]}")
+            previous_state = cursor.fetchall()
+            # Find differences and learn on them
+            transformed_data = get_diff(systemID, list(previous_state), list(current_state))
+
+            json_data = json.dumps(transformed_data)
+            print(json_data)
+            # Define the URL of the other backend API
+            first_backend_url = 'http://172.20.67.22:9876/chatbot/train'
+            second_backend_url = 'http://172.20.67.23:9876/chatbot/train'
+            
+            # Make a POST request with JSON data
+            headers = {'Content-Type': 'application/json'}  # Set the content type to JSON
+            response_first = requests.post(first_backend_url, data=json_data, headers=headers)
+            response_second = requests.post(second_backend_url, data=json_data, headers=headers)
+
+            # Send document learning for systemID IF PAGES ARE NOT EMPTY!!!
+            # Fetch number of documents from pages
+            query_num = f"SELECT COUNT(*) FROM pages WHERE system_id = {systemID}"
+            cursor.execute(query_num)
+            count = cursor.fetchone()[0]
+            if count > 0:
+                parameters = {
+                    "SystemID": str(systemID)
+                }
+                json_parameter = json.dumps(parameters)
+
+                requests.post('http://172.20.67.22:9877/search/train', data=json_parameter, headers={'Content-Type': 'application/json'})
+                requests.post('http://172.20.67.23:9877/search/train', data=json_parameter, headers={'Content-Type': 'application/json'})
 
             # Updating versions table
-            versions_query = f"SELECT versions from versions WHERE system_id = {systemID}"
+            versions_query = f"SELECT default_version from versions WHERE system_id = {systemID}"
             cursor.execute(versions_query)
-            items = cursor.fetchall()
-            versions = eval(items[0][0])
-            versions.append(formatted_time)
-            insert_versions_query = "INSERT INTO versions (versions, default_version) VALUES (%s, %s);"
-            cursor.execute(insert_versions_query, (versions, formatted_time))
+            default_version = cursor.fetchone()[0]
+            insert_versions_query = f"UPDATE versions SET previous_version= '{default_version}', default_version = '{formatted_time}' WHERE system_id = {systemID};"
+            cursor.execute(insert_versions_query)
+            print(default_version, formatted_time)
 
             db_connection.commit()
             cursor.close()
 
-            json_data = json.dumps(transformed_data_list)
+            get_chosen_table_dates()
+            
+            # Check the response status code and handle accordingly
+            if response_first.status_code == 200 and response_second.status_code == 200:
+                return {'success': 'Uspješno spremljene promjene u sustav!'}
+            else:
+                # Handle error cases
+                return {'error': 'Sustav je trenutno već u procesu učenja. Molim Vas pokušajte ponovno'}
+        except Exception:
+            return {'error': 'Sustav je trenutno već u procesu učenja. Molim Vas pokušajte ponovno'}
+        
+@app.route('/goToPreviousVersion', methods=['GET'])  
+def goToPreviousVersion():
+    if request.method == 'GET':
+        systemID = request.args.get('system_id')
+        try:
+            cursor = db_connection.cursor()
 
+            # Updating previous version with null and default with previous
+            versions_query = f"SELECT previous_version, default_version from versions WHERE system_id = {systemID}"
+            cursor.execute(versions_query)
+            items = cursor.fetchone()
+            previous_version, default_version = items
+
+
+            # State which is being replaced
+            cursor.execute(f"SELECT * FROM questions_{systemID}_{default_version}")
+            previous_state = cursor.fetchall()
+
+            # New state
+            cursor.execute(f"SELECT * FROM questions_{systemID}_{previous_version}")
+            new_state = cursor.fetchall()
+
+            transformed_data = get_diff(systemID, list(previous_state), list(new_state))
+
+            json_data = json.dumps(transformed_data)
+            print(json_data)
             # Define the URL of the other backend API
             first_backend_url = 'http://172.20.67.22:9876/chatbot/train'
             second_backend_url = 'http://172.20.67.23:9876/chatbot/train'
@@ -465,27 +548,43 @@ def versioningBySystemId():
             response_first = requests.post(first_backend_url, data=json_data, headers=headers)
             response_second = requests.post(second_backend_url, data=json_data, headers=headers)
 
+            # Send document learning for systemID IF PAGES ARE NOT EMPTY!!!
+            # Fetch number of documents from pages
+            query_num = f"SELECT COUNT(*) FROM pages WHERE system_id = {systemID}"
+            cursor.execute(query_num)
+            count = cursor.fetchone()[0]
+            
+            if count > 0:
+                parameters = {
+                    "SystemID": str(systemID)
+                }
+                json_parameter = json.dumps(parameters)
+
+                requests.post('http://172.20.67.22:9877/search/train', data=json_parameter, headers={'Content-Type': 'application/json'})
+                requests.post('http://172.20.67.23:9877/search/train', data=json_parameter, headers={'Content-Type': 'application/json'})
+
+            update_default_version = f"UPDATE versions SET previous_version = '{''}', default_version = '{previous_version}' WHERE system_id = {systemID};"
+            cursor.execute(update_default_version)
+
+            db_connection.commit()
+            cursor.close()
+
+            get_chosen_table_dates()          
+
             # Check the response status code and handle accordingly
             if response_first.status_code == 200 and response_second.status_code == 200:
                 return {'success': 'Uspješno spremljene promjene u sustav!'}
             else:
                 # Handle error cases
                 return {'error': 'Sustav je trenutno već u procesu učenja. Molim Vas pokušajte ponovno'}
-        
+
         except Exception:
             return {'error': 'Sustav je trenutno već u procesu učenja. Molim Vas pokušajte ponovno'}
 
-# Find differences between two question tables        
-def get_diff(cursor, system_id):
+
+
+def get_diff(system_id, previous_state, new_state):
     try:
-        # Stanje na admin
-        cursor.execute("SELECT * FROM questions WHERE system_id = {system_id}")
-        current_state = cursor.fetchall()
-
-        # Get the previous state from the database
-        cursor.execute(f"SELECT * FROM questions_{system_id}_{chosen_table_dates[int(system_id) - 1]}")
-        previous_state = cursor.fetchall()
-
         # Create a JSON object with differences
         diff_json = {
             'SystemID': str(system_id),
@@ -494,28 +593,43 @@ def get_diff(cursor, system_id):
             'edited_items': []
         }
 
-        # Identify added items
-        added_items = [item for item in current_state if item not in previous_state]
+       # Identify added items
+        added_items = [
+            {
+                'IntentID': item[0],
+                'QuestionID': item[1],
+                'QuestionText': item[2]
+            }
+            for item in new_state
+            if item[0] not in [prev[0] for prev in previous_state]
+        ]
         diff_json['added_items'] = added_items
-
         # Identify deleted items
-        deleted_items = [item for item in previous_state if item not in current_state]
+        deleted_items = [
+            {
+                'IntentID': item[0],
+                'QuestionID': item[1],
+                'QuestionText': item[2]
+            }
+            for item in previous_state
+            if item[0] not in [prev[0] for prev in new_state]
+        ]
         diff_json['deleted_items'] = deleted_items
-
         # Identify edited items
         edited_items = [
-            {'intentID': curr['intentID'], 'questionID': curr['questionID'], 'questionText': curr['questionText']}
-            for curr in current_state if curr in previous_state
-            and (curr['questionID'] != prev['questionID'] or curr['questionText'] != prev['questionText'])
-            for prev in previous_state
+            {
+                'IntentID': curr[0],
+                'QuestionID': curr[1],
+                'QuestionText': curr[2]
+            }
+            for curr in new_state
+            if any(curr[0] == prev[0] and curr[1] != prev[1] for prev in previous_state)
         ]
         diff_json['edited_items'] = edited_items
-
-        return jsonify(diff_json)
+        return diff_json
 
     except Exception as e:
         return jsonify({'error': str(e)})
-        
 
 @app.route('/chatbotSentMessage', methods=['POST'])
 def chatbotSentMessage():
@@ -552,12 +666,12 @@ def chatbotSentMessage():
             response_from_other_backend = send_data_to_machine_learning(json_question, 'query')
             
             if lower_threshold / 100 <= response_from_other_backend['PredictedIntent']['Confidence'] < upper_threshold / 100:
-                result = process_predicted_intents(send_data_to_machine_learning(json_question, 'query/4'), cursor, question, systemID)
+                result = process_predicted_intents(send_data_to_machine_learning(json_question, 'query/6'), cursor, question, systemID)
                 if count > 0:
-                    result.append({'intent_name': 'PRETRAŽI BAZU ZNANJA', 'intent_id': '', 'question': question, 'threshold': response_from_other_backend['PredictedIntent']['Confidence']})
+                    result.append({'intent_name': 'PRETRAŽI BAZU ZNANJA', 'intent_id': -2, 'question': question, 'threshold': response_from_other_backend['PredictedIntent']['Confidence']})
             
             elif response_from_other_backend['PredictedIntent']['Confidence'] >= upper_threshold / 100:
-                predicted_intents = send_data_to_machine_learning(json_question, 'query/4')
+                predicted_intents = send_data_to_machine_learning(json_question, 'query/6')
                 first_object = predicted_intents[0]
                 
                 # Filter objects with the same Confidence as the first object
@@ -569,7 +683,7 @@ def chatbotSentMessage():
                 # Else return that one different IntentID
                 elif len(filtered_objects) == 1:
                     intent_id = response_from_other_backend['PredictedIntent']['IntentID']
-                    query = f"SELECT * FROM steps WHERE intent_id = {intent_id}"
+                    query = f"SELECT * FROM steps_{systemID}_{chosen_table_dates[int(systemID)- 1]} WHERE intent_id = {intent_id}"
                     cursor.execute(query)
                     
                     items = cursor.fetchall()
@@ -583,9 +697,9 @@ def chatbotSentMessage():
                     updateConversation(uuid, systemID, intent_id, "CHATBOT: " + result['assistant_answer'], '', 1)
             
             else:
-                result = process_predicted_intents(send_data_to_machine_learning(json_question, 'query/4'), cursor, question, systemID)
+                result = process_predicted_intents(send_data_to_machine_learning(json_question, 'query/6'), cursor, question, systemID)
                 if count > 0:
-                    result.append({'intent_name': 'PRETRAŽI BAZU ZNANJA', 'intent_id': -1, 'question': question, 'threshold': response_from_other_backend['PredictedIntent']['Confidence']})
+                    result.append({'intent_name': 'PRETRAŽI BAZU ZNANJA', 'intent_id': -2, 'question': question, 'threshold': response_from_other_backend['PredictedIntent']['Confidence']})
                 result.append({'intent_name': 'PREFORMULIRAT ĆU PITANJE', 'intent_id': -1, 'question': question, 'threshold': response_from_other_backend['PredictedIntent']['Confidence']})
 
             # Return the JSON string as a JSON response
@@ -596,21 +710,25 @@ def chatbotSentMessage():
 
 def process_predicted_intents(predicted_intents, cursor, question, systemID):
     result = []
+    greetings = ['Dobar dan', 'Dobar dan, kako si', 'Bok', 'Doviđenja']
     for predicted_intent in predicted_intents:
         intent_id = predicted_intent['PredictedIntent']['IntentID']
         query = f"SELECT intent_name FROM intents_{systemID}_{chosen_table_dates[int(systemID)- 1]} WHERE intent_id = {intent_id}"
         cursor.execute(query)
         intent_name = cursor.fetchall()
+        intent_name_str = intent_name[0][0]
 
         confidence = predicted_intent['PredictedIntent'].get('Confidence', 0.0)
 
-        intent_object = {
-            'intent_name': intent_name[0][0],
-            'intent_id': intent_id,
-            'question': question,
-            'threshold': confidence,
-        }
-        result.append(intent_object)
+        # Check if intent_name is in greetings list
+        if intent_name_str not in greetings:
+            intent_object = {
+                'intent_name': intent_name_str,
+                'intent_id': intent_id,
+                'question': question,
+                'threshold': confidence,
+            }
+            result.append(intent_object)
     return result
       
 def send_data_to_machine_learning(data, type):
@@ -725,10 +843,11 @@ def find_matching_rule(rules, conditions, id):
 @app.route('/bigBang', methods=['GET'])
 def bigBang():
     if request.method == 'GET':
+        '''
         ml_questions = []
 
-        # Iterate over each system ID (1 to 4)
-        for system_id in range(1, 5):
+        # Iterate over each system ID (1 to 5)
+        for system_id in range(1, 6):
             cursor = db_connection.cursor()
             query = f"SELECT * FROM questions WHERE system_id = {system_id}"
             cursor.execute(query)
@@ -766,13 +885,28 @@ def bigBang():
         other_backend_url = 'http://172.20.67.23:9876/chatbot/train'
         response = requests.post(other_backend_url, data=json_data, headers=headers)
         print(response)
-
+        '''
         # Format the time in the desired format
         formatted_time = datetime.utcnow().replace(tzinfo=timezone.utc).astimezone(timezone(timedelta(hours=1))).strftime('%Y_%m_%dT%H_%M_%S_%f')[:-3] + 'Z'
         for system_id in range(1, 6):
+            '''
+            # Send document learning for systemID IF PAGES ARE NOT EMPTY!!!
+            # Fetch number of documents from pages
+            query_num = f"SELECT COUNT(*) FROM pages WHERE system_id = {system_id}"
+            cursor.execute(query_num)
+            count = cursor.fetchone()[0]
+            if count > 0:
+                parameters = {
+                    "SystemID": str(system_id)
+                }
+                json_parameter = json.dumps(parameters)
 
+                requests.post('http://172.20.67.22:9877/search/train', data=json_parameter, headers={'Content-Type': 'application/json'})
+                requests.post('http://172.20.67.23:9877/search/train', data=json_parameter, headers={'Content-Type': 'application/json'})
+
+            '''
             existing_tables = ['intents', 'questions', 'steps', 'synonyms', 'thresholds', 'initials', 'pages', 'themes']
-            new_tables = ['intents_' + str(system_id) + "_" + formatted_time, 'questions_' + str(system_id) + "_" + formatted_time, 'steps_' + str(system_id) + "_" + formatted_time, 'synonyms_' + str(system_id) + "_" + formatted_time, 'thresholds_' + str(system_id) + "_" + formatted_time, 'initials_' + str(system_id) + "_" + formatted_time, 'themes_' + str(system_id) + "_" + formatted_time]
+            new_tables = ['intents_' + str(system_id) + "_" + formatted_time, 'questions_' + str(system_id) + "_" + formatted_time, 'steps_' + str(system_id) + "_" + formatted_time, 'synonyms_' + str(system_id) + "_" + formatted_time, 'thresholds_' + str(system_id) + "_" + formatted_time, 'initials_' + str(system_id) + "_" + formatted_time, 'pages_' + str(system_id) + "_" + formatted_time, 'themes_' + str(system_id) + "_" + formatted_time]
             cursor = db_connection.cursor()
 
             for existing_table, new_table in zip(existing_tables, new_tables):
@@ -787,14 +921,17 @@ def bigBang():
                 copy_data_query = f"""
                     INSERT INTO {new_table}
                     SELECT * FROM {existing_table}
-                    WHERE system_id = {system_id}
                 """
+                # Conditionally add WHERE clause for system_id except for 'steps' table
+                if existing_table != 'steps':
+                    copy_data_query += f" WHERE system_id = {str(system_id)}"
                 cursor.execute(copy_data_query)
 
             get_chosen_table_dates()
 
         db_connection.commit()
         cursor.close()
+        return {'success': 'success'}
 
 
 if __name__ == '__main__':
