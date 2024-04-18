@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
 import re
 from datetime import datetime, timedelta, timezone
 import psycopg2, json, requests
@@ -9,6 +9,8 @@ from email.mime.application import MIMEApplication
 from flask_cors import CORS  # Add this import
 app = Flask(__name__)
 CORS(app)
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Database configuration
 db_connection = psycopg2.connect(
@@ -27,8 +29,7 @@ def get_chosen_table_dates():
     cursor = db_connection.cursor()
 
     try:
-        # Iterate over the fixed system IDs (1, 2, 3, 4)
-        for system_id in [1, 2, 3, 4, 5]:
+        for system_id in [1, 2, 3, 4, 5, 6]:
             # Write a query to get the latest table for the specific system
             query = f"""
                 SELECT default_version from versions where system_id = {system_id}
@@ -325,7 +326,7 @@ def searchDocuments():
             }
             json_question = json.dumps(transformed_question)
 
-            response_backend = requests.post('http://172.20.67.124:9876/search/query', data=json_question, headers={'Content-Type': 'application/json'})
+            response_backend = requests.post('http://172.20.67.124:9877/search/query', data=json_question, headers={'Content-Type': 'application/json'})
 
             # Check the response_backend status code and handle accordingly
             if response_backend.status_code == 200:
@@ -358,7 +359,22 @@ def searchDocuments():
 
         except Exception as e:
             return jsonify(str(e))
+        
 
+@app.route('/feedbackResponse', methods=['POST'])
+def feedbackResponse():
+    if request.method == 'POST':
+        try:
+            data = request.json
+            stars = data.get("stars")
+            comment = data.get("comment")
+            
+            #save to db later
+            print(stars, comment)
+            return jsonify({"status": "success"})
+
+        except Exception as e:
+            return jsonify(str(e))
     
 @app.route('/updateConversationTmp', methods=['POST'])
 def updateConversationTmp():
@@ -413,12 +429,12 @@ def checkForPreviousVersion():
         systemID = request.args.get('system_id')
         try:
             cursor = db_connection.cursor()
-            query = f"SELECT previous_version from versions WHERE system_id = {systemID}"
+            query = f"SELECT previous_version, default_version from versions WHERE system_id = {systemID}"
             cursor.execute(query)
-            previous_version = cursor.fetchone()
-
-            return jsonify({"previous_version": previous_version})
+            versions = cursor.fetchone()
+            previous_version, default_version = versions
             cursor.close()
+            return jsonify({"previous_version": previous_version, "default_version": default_version})
 
 
         except Exception as e:
@@ -452,7 +468,6 @@ def versioningBySystemId():
                 # Conditionally add WHERE clause for system_id except for 'steps' table
                 if existing_table != 'steps':
                     copy_data_query += f" WHERE system_id = {str(systemID)}"
-                print(copy_data_query)
                 cursor.execute(copy_data_query)
 
 
@@ -497,7 +512,6 @@ def versioningBySystemId():
             default_version = cursor.fetchone()[0]
             insert_versions_query = f"UPDATE versions SET previous_version= '{default_version}', default_version = '{formatted_time}' WHERE system_id = {systemID};"
             cursor.execute(insert_versions_query)
-            print(default_version, formatted_time)
 
             db_connection.commit()
             cursor.close()
@@ -588,45 +602,50 @@ def get_diff(system_id, previous_state, new_state):
         # Create a JSON object with differences
         diff_json = {
             'SystemID': str(system_id),
-            'added_items': [],
-            'deleted_items': [],
-            'edited_items': []
+            'AddedItems': [],
+            'DeletedItems': [],
+            'EditedItems': []
         }
 
-       # Identify added items
+        # Identify added items
         added_items = [
             {
-                'IntentID': item[0],
-                'QuestionID': item[1],
-                'QuestionText': item[2]
+                'IntentID': str(item[2]),
+                'QuestionID': str(item[0]),
+                'QuestionText': str(item[1])
             }
             for item in new_state
             if item[0] not in [prev[0] for prev in previous_state]
         ]
-        diff_json['added_items'] = added_items
+        if added_items:
+            diff_json['AddedItems'] = added_items
+
         # Identify deleted items
         deleted_items = [
             {
-                'IntentID': item[0],
-                'QuestionID': item[1],
-                'QuestionText': item[2]
+                'IntentID': str(item[2]),
+                'QuestionID': str(item[0]),
+                'QuestionText': str(item[1])
             }
             for item in previous_state
             if item[0] not in [prev[0] for prev in new_state]
         ]
-        diff_json['deleted_items'] = deleted_items
+        if deleted_items:
+            diff_json['DeletedItems'] = deleted_items
+
         # Identify edited items
         edited_items = [
             {
-                'IntentID': curr[0],
-                'QuestionID': curr[1],
-                'QuestionText': curr[2]
+                'IntentID': str(curr[2]),
+                'QuestionID': str(curr[0]),
+                'QuestionText': str(curr[1])
             }
             for curr in new_state
             if any(curr[0] == prev[0] and curr[1] != prev[1] for prev in previous_state)
         ]
-        diff_json['edited_items'] = edited_items
-        return diff_json
+        if edited_items:
+            diff_json['EditedItems'] = edited_items
+        return [diff_json]
 
     except Exception as e:
         return jsonify({'error': str(e)})
@@ -637,7 +656,7 @@ def chatbotSentMessage():
         try:
             data = request.json
             systemID = data.get("systemID")
-            question = data.get("question").capitalize()  # First letter uppercase
+            question = data.get("question")[0].upper() + data.get("question")[1:]  # First letter uppercase
             uuid = data.get("uuid")
 
             cursor = db_connection.cursor()
@@ -843,11 +862,10 @@ def find_matching_rule(rules, conditions, id):
 @app.route('/bigBang', methods=['GET'])
 def bigBang():
     if request.method == 'GET':
-        '''
         ml_questions = []
 
-        # Iterate over each system ID (1 to 5)
-        for system_id in range(1, 6):
+        # Iterate over each system ID (1 to 6)
+        for system_id in range(1, 7):
             cursor = db_connection.cursor()
             query = f"SELECT * FROM questions WHERE system_id = {system_id}"
             cursor.execute(query)
@@ -889,7 +907,6 @@ def bigBang():
         # Format the time in the desired format
         formatted_time = datetime.utcnow().replace(tzinfo=timezone.utc).astimezone(timezone(timedelta(hours=1))).strftime('%Y_%m_%dT%H_%M_%S_%f')[:-3] + 'Z'
         for system_id in range(1, 6):
-            '''
             # Send document learning for systemID IF PAGES ARE NOT EMPTY!!!
             # Fetch number of documents from pages
             query_num = f"SELECT COUNT(*) FROM pages WHERE system_id = {system_id}"
@@ -904,7 +921,6 @@ def bigBang():
                 requests.post('http://172.20.67.22:9877/search/train', data=json_parameter, headers={'Content-Type': 'application/json'})
                 requests.post('http://172.20.67.23:9877/search/train', data=json_parameter, headers={'Content-Type': 'application/json'})
 
-            '''
             existing_tables = ['intents', 'questions', 'steps', 'synonyms', 'thresholds', 'initials', 'pages', 'themes']
             new_tables = ['intents_' + str(system_id) + "_" + formatted_time, 'questions_' + str(system_id) + "_" + formatted_time, 'steps_' + str(system_id) + "_" + formatted_time, 'synonyms_' + str(system_id) + "_" + formatted_time, 'thresholds_' + str(system_id) + "_" + formatted_time, 'initials_' + str(system_id) + "_" + formatted_time, 'pages_' + str(system_id) + "_" + formatted_time, 'themes_' + str(system_id) + "_" + formatted_time]
             cursor = db_connection.cursor()
@@ -928,10 +944,42 @@ def bigBang():
                 cursor.execute(copy_data_query)
 
             get_chosen_table_dates()
-
+        '''
         db_connection.commit()
         cursor.close()
         return {'success': 'success'}
+    
+
+
+@app.route('/uuidv4', methods=['GET'])
+def uuidv4():
+    if request.method == 'GET':
+        try:
+            response = requests.get("https://172.20.67.6:8443/api/v4/projects/92/repository/files/dependencies%2Fuuid%409.0.1.js/raw?ref=master&private_token=glpat-Pyx7n_FwP7oJW8rHsZ9y", verify=False)
+            return Response(response.text, content_type='application/javascript')
+
+        except Exception as e:
+            return jsonify(str(e)) 
+        
+@app.route('/vue3', methods=['GET'])
+def vue3():
+    if request.method == 'GET':
+        try:
+            response = requests.get("https://172.20.67.6:8443/api/v4/projects/92/repository/files/dependencies%2Fvue3.global.js/raw?ref=master&private_token=glpat-Pyx7n_FwP7oJW8rHsZ9y", verify=False)
+            return Response(response.text, content_type='application/javascript')
+
+        except Exception as e:
+            return jsonify(str(e)) 
+        
+@app.route('/dompurify', methods=['GET'])
+def dompurify():
+    if request.method == 'GET':
+        try:
+            response = requests.get("https://172.20.67.6:8443/api/v4/projects/92/repository/files/dependencies%2Fdompurify%403.0.6.js/raw?ref=master&private_token=glpat-Pyx7n_FwP7oJW8rHsZ9y", verify=False)
+            return Response(response.text, content_type='application/javascript')
+
+        except Exception as e:
+            return jsonify(str(e)) 
 
 
 if __name__ == '__main__':

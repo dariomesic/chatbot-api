@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 import re
 from datetime import datetime, timedelta
 import psycopg2, json, requests
@@ -9,10 +9,11 @@ from email.mime.application import MIMEApplication
 from flask_cors import CORS  # Add this import
 from tika import parser
 import os
-from tempfile import NamedTemporaryFile
-
 import time
-
+from concurrent.futures import ThreadPoolExecutor
+from tempfile import NamedTemporaryFile
+import io
+import base64
 app = Flask(__name__)
 CORS(app)
 
@@ -54,8 +55,8 @@ def getNameForSystem():
         try:
             system_id = request.args.get('system_id')
             cursor = db_connection.cursor()
-            query = f"SELECT system_name FROM systems WHERE system_id = {system_id}"
-            cursor.execute(query)
+            query = "SELECT system_name FROM systems WHERE system_id = %s"
+            cursor.execute(query, (system_id,))
             items = cursor.fetchall()
 
             cursor.close()
@@ -358,6 +359,24 @@ def deleteIntent():
             # Update the intents_count in the systems table
             query = f"UPDATE systems SET intents_count = {count} WHERE system_id = {system_id};"
             cursor.execute(query)
+            db_connection.commit()
+
+            # Delete intent from themes
+            query = f"SELECT intents FROM themes WHERE system_id = '{system_id}';"
+            cursor.execute(query)
+            items = json.loads(cursor.fetchone()[0])
+            # Find index of the object with the given key
+            index_to_remove = None
+            for i, item in enumerate(items):
+                if str(item['key']) == str(intent_id):
+                    index_to_remove = i
+                    break
+            # If object found, remove it from the list
+            if index_to_remove is not None:
+                del items[index_to_remove]
+
+            query_steps = "UPDATE themes SET intents = %s WHERE system_id = %s;"
+            cursor.execute(query_steps, (json.dumps(items), system_id))
             db_connection.commit()
             cursor.close()
 
@@ -688,8 +707,8 @@ def updateThemes():
 
             cursor = db_connection.cursor()
             # Use parameterized query to avoid SQL injection
-            query_steps = "UPDATE themes SET intents = %s WHERE system_id = %s;"
-            cursor.execute(query_steps, (json.dumps(intents), systemID))
+            query = "UPDATE themes SET intents = %s WHERE system_id = %s;"
+            cursor.execute(query, (json.dumps(intents), systemID))
 
             db_connection.commit()
             cursor.close()
@@ -794,17 +813,15 @@ def parse_file(file, file_extension):
             # Parse PDF using tika
             raw_xml = parser.from_file(temp_file.name, xmlContent=True)
             body = raw_xml['content'].split('<body>')[1].split('</body>')[0]
-            print(body)
             body_without_tag = body.replace("<p>", "").replace("</p>", "").replace("<div>", "").replace("</div>", "").replace("<p />", "")
-            print(body_without_tag)
             text_pages = body_without_tag.split("""<div class="page">""")
-            print(text_pages)
-            for page_num, page_text in enumerate(text_pages, start=0):
+            for page_num, page_text in enumerate(text_pages, start=1):
                 extracted_text.append({'page_num': str(page_num), 'text': page_text.strip()})
 
         elif file_extension in ['.docx', '.doc']:
             # Parse non-PDF files using tika
             raw_xml = parser.from_file(temp_file.name)
+            print(temp_file, temp_file.name)
             extracted_text.append({'page_num': '', 'text': raw_xml.get('content', '')})
         temp_file.close()
         os.remove(temp_file.name)
@@ -821,13 +838,22 @@ def uploadDocument():
 
     title = request.form.get('title', 'Untitled Document')
     file_extension = os.path.splitext(file.filename)[1]
-
     try:
         if file_extension.lower() in ['.pdf', '.docx', '.doc', '.html']:
+            # Read file content before parsing
+            file_content = file.read()
+            # Reset file pointer to beginning
+            file.seek(0)
+
+            # Parse file
             text = parse_file(file, file_extension)
+
+            # Encode file content
+            encoded_content = base64.b64encode(file_content).decode('utf-8')            
+            # Insert document into database
             cursor = db_connection.cursor()
-            query = "INSERT INTO documents (title, system_id) VALUES (%s, %s) RETURNING id_doc;"
-            cursor.execute(query, (title, request.form.get('system_id')))
+            query = "INSERT INTO documents (title, file_blob, system_id) VALUES (%s, %s, %s) RETURNING id_doc;"
+            cursor.execute(query, (title, encoded_content, request.form.get('system_id')))
             document_id = cursor.fetchone()[0]
             
             # Insert page data into 'pages' table
@@ -842,6 +868,7 @@ def uploadDocument():
         
     except Exception as e:
         return jsonify({'error': f'Error parsing file: {str(e)}'})
+
 
 '''
 
@@ -915,6 +942,7 @@ def searchDocuments():
                 document = {
                     'text': response['SearchResult']['AnswerTexts'][0]['Text'],
                     'document_title': name,
+                    'document_id': response['SearchResult']['AnswerTexts'][0]['DocumentID'], 
                     'document_page': response['SearchResult']['AnswerTexts'][0]['Page'],
                     'score': response['SearchResult']['AnswerTexts'][0]['Score'],
                     'threshold': threshold
@@ -933,6 +961,7 @@ def deleteDocumentById():
     if request.method == 'DELETE':
         try:
             id_doc = request.args.get('id_doc')
+            system_id = request.args.get('system_id')
 
             cursor = db_connection.cursor()
             query_pages = f"DELETE FROM pages WHERE id_doc = '{id_doc}'"
@@ -941,6 +970,13 @@ def deleteDocumentById():
             cursor.execute(query)
             db_connection.commit()
             cursor.close()
+
+            transformed_question = {
+                "SystemID": system_id
+            }
+            
+            json_question = json.dumps(transformed_question)
+            requests.post('http://172.20.67.21:9877/search/train', data=json_question, headers={'Content-Type': 'application/json'})
 
             return jsonify({"status": "success"})
 
@@ -967,6 +1003,31 @@ def saveDocumentThreshold():
 
         except Exception as e:
             return jsonify(str(e))
+        
+
+@app.route('/downloadDocument', methods=['GET'])
+def downloadDocument():
+    if request.method == 'GET':
+        try:
+            document_id = request.args.get('document_id')
+            # Fetch document blob from the database
+            cursor = db_connection.cursor()
+            query = "SELECT title, file_blob FROM documents WHERE id_doc = %s;"
+            cursor.execute(query, (document_id,))
+            document_data = cursor.fetchone()
+            cursor.close()
+            
+            # Send the document as a response
+            if document_data:
+                title, file_blob = document_data
+                if isinstance(file_blob, str):
+                    # If file_blob is stored as a string, decode it
+                    file_blob = base64.b64decode(file_blob)
+                return send_file(io.BytesIO(file_blob), download_name=title, as_attachment=True)
+            else:
+                return jsonify({'error': 'Document not found'})
+        except Exception as e:
+            return jsonify({'error': f'Error downloading document: {str(e)}'})
 
 
 
@@ -1046,10 +1107,11 @@ def updateConversation(uuid, systemID, intent_id, text, threshold, delay):
         items = cursor.fetchall()
         intent_name = items[0][0]
     elif intent_id == -1:
-    	# If intent_id is -1, set intent_name to 'nedefinirano
+        # If intent_id is -1, set intent_name to 'nedefinirano'
         intent_name = 'nedefinirano'
     else:
         intent_name = 'baza znanja'
+
     # Insert a new intent into the database using parameterized query
     query = "INSERT INTO conversations (uuid, time, system_id, intent_id, text, threshold, thumbs_up, thumbs_down, conversation_id, intent_name) VALUES (%s, %s, %s, %s, %s, %s, 0, 0, DEFAULT, %s);"
     values = (uuid, current_datetime, systemID, intent_id, text, threshold, intent_name)
@@ -1159,7 +1221,7 @@ def process_predicted_intents(predicted_intents, cursor, question):
             }
             result.append(intent_object)
 
-    return result     
+    return result
 
 def replace_synonyms(question, cursor, system_id):
     query = "SELECT old_value, new_value FROM synonyms WHERE system_id = %s"
@@ -1258,7 +1320,7 @@ def bigBang():
         ml_questions = []
 
         # Iterate over each system ID (1 to 5)
-        for system_id in range(1, 6):
+        for system_id in range(1, 7):
             cursor = db_connection.cursor()
             query = f"SELECT * FROM questions WHERE system_id = {system_id}"
             cursor.execute(query)
@@ -1292,39 +1354,68 @@ def bigBang():
 def testerForChatbot():
     if request.method == 'GET':
         cursor = db_connection.cursor()
-        query = "SELECT step_dict FROM steps"
+        query = "SELECT intent_id, step_dict FROM steps"
         cursor.execute(query)
 
         questions = []
         for row in cursor.fetchall():
-            system_id, step_dict = row[0], row[1]
+            intent_id, step_dict = row[0], row[1]
+            step_dict = json.loads(step_dict)
             if step_dict is not None and len(step_dict) == 1:
+                query = f"SELECT system_id FROM intents WHERE intent_id = {intent_id}"
+                cursor.execute(query)
+                system_id = cursor.fetchall()[0][0]
                 query = f"SELECT * FROM questions WHERE system_id = {system_id}"
                 cursor.execute(query)
-                for item in cursor.fetchall()[0]:
-                    questions.append({'system_id': item['system_id'], 'question': item['question']})
-        print(questions)
-'''
+                for item in cursor.fetchall():
+                    questions.append({'system_id': item[3], 'question': item[1]})
+        
         initial_delay = 5
-        for i, question in enumerate(questions):
-            current_delay = initial_delay / (i + 1)
-            print(f"Sending request for question {i+1} with a delay of {current_delay} seconds")
-            time.sleep(current_delay)
-            question = {
-                "SessionID": "",
-                "SystemID": question['system_id'],
-                "QuestionText": question['step_dict']
-            }
-            make_api_requests(question, "http://172.20.67.24/chatbotSentMessage")
+        with ThreadPoolExecutor() as executor:
+            for i, question in enumerate(questions):
+                current_delay = initial_delay / (i + 1)
+                print(f"Sending request for question {i+1} as name {question} with a delay of {current_delay} seconds")
+                question_data = {
+                    "uuid": "abc",
+                    "systemID": str(question['system_id']),
+                    "question": question['question']
+                }
+                # Submitting the request to the thread pool executor
+                executor.submit(make_api_requests, json.dumps(question_data), "http://172.20.67.24:8081/chatbotSentMessage")
+                time.sleep(current_delay)
+
+@app.route('/testerForDocuments', methods=['GET'])
+def testerForDocuments():
+    if request.method == 'GET':
+        while True:  # Run continuously
+            cursor = db_connection.cursor()
+            query = "SELECT system_id, text_page FROM pages WHERE id_doc = 17"
+            cursor.execute(query)
+
+            questions = []
+            for row in cursor.fetchall():
+                questions.append({'system_id': row[0], 'question': row[1]})
+
+            initial_delay = 0.03
+            with ThreadPoolExecutor() as executor:
+                for i, question in enumerate(questions):
+                    current_delay = initial_delay
+                    print(f"Sending request for document {i+1}")
+                    question_data = {
+                        "systemID": str(question['system_id']),
+                        "text": str(question['question'])
+                    }
+                    # Submitting the request to the thread pool executor
+                    executor.submit(make_api_requests, json.dumps(question_data), "http://172.20.67.24:8081/searchDocuments", i)
+                    time.sleep(current_delay)
 
 
-def make_api_requests(question, api_url):
+def make_api_requests(question, api_url, i):
      # Make a POST request with JSON data
     headers = {'Content-Type': 'application/json'}  # Set the content type to JSON
     response = requests.post(api_url, data=question, headers=headers)
+    if response.status_code == 200:
+        print(f"API Result for document {i + 1}")
 
-    result = response.json()
-    print(f"API Result: {result}")
-'''
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=8080)
